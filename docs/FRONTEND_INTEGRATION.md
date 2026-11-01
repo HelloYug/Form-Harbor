@@ -1,4 +1,4 @@
-# FormHarbour Frontend Integration Recipes
+# FormHarbour Frontend Integration Recipes 🔌
 
 This document contains copy-ready prompts and code for integrating FormHarbour into an already-built website and form.
 
@@ -11,7 +11,7 @@ The examples assume:
 - A status element has the ID form-status.
 - The visible controls are kept in the order wanted in the Google Sheet.
 
-## Master integration prompt
+## 🧭 Master integration prompt
 
 Use this prompt when asking an AI tool or developer to connect another website form:
 
@@ -26,7 +26,7 @@ frontend saved-status message only when SHOW_CONFIRMATION_NOTIFICATION is true,
 and never expose admin notification addresses in browser code.
 ~~~
 
-## 1. Connect the form endpoint
+## 1. 🔗 Connect the form endpoint
 
 Prompt:
 
@@ -61,7 +61,7 @@ CSS:
 }
 ~~~
 
-## 2. Pick the website name automatically
+## 2. 🌐 Pick the website name automatically
 
 Prompt:
 
@@ -90,7 +90,7 @@ document.getElementById("form-site").value = getFormHarbourSite();
 
 The backend normalizes one leading www. and creates the website tab from the hostname. Never use a value such as https://example.com/contact.
 
-## 3. Generate a duplicate-safe submission ID
+## 3. 🆔 Generate a duplicate-safe submission ID
 
 Prompt:
 
@@ -117,7 +117,7 @@ document.getElementById("form-submission-id").value = submissionId;
 
 UUID-shaped values are displayed compactly in the Sheet by the backend. Do not generate a new ID inside every retry attempt.
 
-## 4. Add the spam honeypot
+## 4. 🛡️ Add the spam honeypot
 
 Prompt:
 
@@ -149,7 +149,7 @@ CSS:
 }
 ~~~
 
-## 5. Show a frontend data-saved notification
+## 5. ✅ Show a frontend data-saved notification
 
 Prompt:
 
@@ -221,7 +221,7 @@ The frontend notification is independent from submitter confirmation email. The 
 SHOW_CONFIRMATION_NOTIFICATION: true
 ~~~
 
-## 6. Enable the saved-data confirmation email
+## 6. ✉️ Enable the saved-data confirmation email
 
 Prompt:
 
@@ -249,7 +249,7 @@ CONFIRMATION_EMAIL_FIELD_NAMES: ["email"]
 
 The default is SEND_CONFIRMATION_EMAILS: false. When enabled, the confirmation is queued only after the Sheet row is saved and includes the website name, timestamp, submission ID, and submitted fields.
 
-## 7. Use JSON from a same-origin or compatible client
+## 7. 🧩 Use JSON from a same-origin or compatible client
 
 Prompt:
 

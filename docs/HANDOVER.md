@@ -1,8 +1,8 @@
-# Project Handover & Cognitive Continuity Document
+# Project Handover & Cognitive Continuity Document 🧠
 
 > This is the authoritative handover for the FormHarbour Google Apps Script backend. Read it together with `.agents/AGENTS.md` before changing the implementation.
 
-## 1. Executive Summary & Project Purpose
+## 1. 🎯 Executive Summary & Project Purpose
 
 - **Project Name**: FormHarbour universal form backend
 - **Core Value Proposition**: One Google Apps Script Web App endpoint accepts form submissions from multiple websites, stores each website in its own dynamically evolving Google Sheet tab, and sends recoverable per-recipient notifications.
@@ -10,7 +10,7 @@
 - **Repository Root**: `E:\Yug Storage\Desktop\Yug Study\Programming\FormHarbour`
 - **Current Operational Status**: Initial implementation complete; requires a real Spreadsheet ID and notification addresses before deployment.
 
-## 2. Technology Stack & Runtime Toolchain
+## 2. 🧰 Technology Stack & Runtime Toolchain
 
 | Layer | Technology | Role |
 | :--- | :--- | :--- |
@@ -23,7 +23,7 @@
 
 There is no local package manager, server process, or external database. The project is copied into an Apps Script project and deployed as a Web App.
 
-## 3. Directory Structure & Codebase Map
+## 3. 🗺️ Directory Structure & Codebase Map
 
 ```text
 FormHarbour/
@@ -55,7 +55,7 @@ FormHarbour/
 - `processPendingNotifications()`: Claims and sends bounded individual recipient deliveries outside spreadsheet locks.
 - `checkSystemHealth()`: Returns concise administrator diagnostics.
 
-## 4. End-to-End Execution Flows & Runtime Architecture
+## 4. 🔁 End-to-End Execution Flows & Runtime Architecture
 
 ### Submission flow
 
@@ -95,7 +95,7 @@ sequenceDiagram
   Note over Worker,Queue: Expired leases become retryable; exactly-once delivery is impossible to guarantee.
 ```
 
-## 5. Persistence Architecture
+## 5. 💾 Persistence Architecture
 
 Every website gets a tab named after its normalized hostname, or a deterministic hash-suffixed name when the hostname is longer than Sheets’ 100-character tab-name limit. Website tabs use Google Forms-style order: `Timestamp` first, user fields next, then reserved `__fh_` operational columns. User fields are appended; existing order and existing row values are preserved.
 
@@ -140,7 +140,7 @@ erDiagram
   }
 ```
 
-## 6. Architectural Restraints & Decisions
+## 6. 🧭 Architectural Restraints & Decisions
 
 1. **No secrets in browser code**: `_site` is only a routing hint and is explicitly not treated as authentication.
 2. **Persist before mail**: Mail is never attempted until the website row and queue state exist. A mail failure cannot delete a saved submission.
@@ -150,7 +150,7 @@ erDiagram
 6. **Conservative quota accounting**: Actual `MailApp` remaining recipient quota, a rolling 24-hour application event budget, in-flight reservations, and the configured reserve percentage are combined. Account-wide guarantees are impossible when other scripts send mail.
 7. **Platform limitations are explicit**: The implementation does not claim unrestricted CORS, arbitrary HTTP status headers, preflight support, or mathematically exactly-once email delivery.
 
-## 7. Explicit User Preferences & Working Directives
+## 7. 📌 Explicit User Preferences & Working Directives
 
 - Deliver the requested root files as `Code.gs` and `README.md`.
 - Put editable configuration placeholders at the top of `Code.gs`; do not ask for configuration values in chat.
@@ -158,7 +158,7 @@ erDiagram
 - Prefer built-in Apps Script services and keep the deployment lightweight.
 - Never expose stack traces, full request bodies, or complete recipient lists through public responses.
 
-## 8. Defensive Hardening & Graceful Fallbacks
+## 8. 🛡️ Defensive Hardening & Graceful Fallbacks
 
 | Area | Protection / fallback |
 | :--- | :--- |
@@ -171,7 +171,7 @@ erDiagram
 | Recovery | Durable queue, processing leases, expired-lease recovery, rolling quota accounting, terminal status retention |
 | Failure response | Structured JSON body; storage/lock failures are retryable and never falsely reported as stored |
 
-## 9. Current Status, Roadmap & Known Limitations
+## 9. 📍 Current Status, Roadmap & Known Limitations
 
 ### Implemented and statically verified
 
@@ -216,7 +216,7 @@ erDiagram
 2. Exercise native form and JSON clients against the deployed `/exec` URL.
 3. Monitor `checkSystemHealth()` and adjust internal defaults only if real traffic warrants it.
 
-## 10. Incoming Agent Checklist
+## 10. ✅ Incoming Agent Checklist
 
 - [ ] Run npm test for the mocked Apps Script behavior suite.
 - [ ] Read this file and `.agents/AGENTS.md` completely.

@@ -1,10 +1,10 @@
-# FormHarbour complete setup guide
+# FormHarbour complete setup guide 🚀
 
 This guide takes you from an empty Google Spreadsheet to a working public form endpoint, notification queue, and local test website.
 
 The backend runs as a Google Apps Script Web App. It stores submissions in Google Sheets and sends notifications through the Google account that owns the deployment. Google’s official references are the [Web Apps guide](https://developers.google.com/apps-script/guides/web) and the [Apps Script authorization guide](https://developers.google.com/apps-script/guides/services/authorization).
 
-## 1. What you are setting up
+## 1. 🧭 What you are setting up
 
 You will have:
 
@@ -17,7 +17,7 @@ You will have:
 
 The public browser form sends data to the Web App. The script writes the row first, then queues individual email notifications. The queue worker runs automatically every minute as a recovery path.
 
-## 2. Create the Google Spreadsheet
+## 2. 📊 Create the Google Spreadsheet
 
 1. Sign in to the Google account that should own the backend and send its emails.
 2. Open Google Sheets and create a blank spreadsheet, or select an existing spreadsheet dedicated to this form system.
@@ -41,7 +41,7 @@ The Spreadsheet ID is only the text between /d/ and /edit:
 
 Copy only that ID. Do not paste the complete URL, /edit suffix, #gid value, spaces, or quotation marks into Code.gs.
 
-## 3. Create the Apps Script project
+## 3. 🧩 Create the Apps Script project
 
 You can create a standalone project or open Apps Script from the spreadsheet.
 
@@ -60,7 +60,7 @@ You can create a standalone project or open Apps Script from the spreadsheet.
 
 Both options work because the backend opens the configured spreadsheet by ID. A standalone project is easier to move between spreadsheets later.
 
-## 4. Add the backend code
+## 4. 💻 Add the backend code
 
 1. Open the repository file Code.gs.
 2. Copy the complete file contents.
@@ -70,7 +70,7 @@ Both options work because the backend opens the configured spreadsheet by ID. A 
 
 Do not split the file into separate files unless you also update every referenced helper. The delivered Code.gs is self-contained.
 
-## 5. Configure the backend values
+## 5. ⚙️ Configure the backend values
 
 At the top of Code.gs, edit only the public CONFIG object first:
 
@@ -154,7 +154,7 @@ The setting controls field names, not recipient addresses. If the configured fie
 
 You do not register website names, create spreadsheet tabs, list form field names, create triggers, or configure email templates manually. Website tabs and columns are created automatically.
 
-## 6. Authorize the Apps Script project
+## 6. 🔐 Authorize the Apps Script project
 
 1. In the Apps Script editor, select setup from the function dropdown.
 2. Click **Run**.
@@ -203,7 +203,7 @@ is still using an older copy of `Code.gs`. Replace the project file with the
 current repository version, save it, and reload the Apps Script editor. No new
 deployment is required just to refresh this function list.
 
-## 7. Check setup before deployment
+## 7. 🧪 Check setup before deployment
 
 Run testSubmission() from the Apps Script editor.
 
@@ -220,7 +220,7 @@ Then run checkSystemHealth(). Review the returned object and execution log. A he
 
 If setup() fails, fix that error before deploying.
 
-## 8. Deploy the Web App
+## 8. 🚀 Deploy the Web App
 
 1. In Apps Script, click **Deploy → New deployment**.
 2. Beside **Select type**, choose **Web app**.
@@ -247,7 +247,7 @@ Google’s official Web Apps documentation describes the current deployment flow
 
 https://developers.google.com/apps-script/guides/web
 
-## 9. Configure and use the local test website
+## 9. 🖥️ Configure and use the local test website
 
 The local test website is in test-form/.
 
@@ -296,7 +296,7 @@ UUID-shaped `_submission_id` values are compacted before being written to the we
 
 If the browser reports a cross-origin response problem, do not immediately submit repeatedly. First check whether a new row and email exist. Apps Script may receive the simple POST while the browser is unable to read the redirected response.
 
-## 10. Connect a real website form
+## 10. 🔌 Connect a real website form
 
 Assume the website and its form already exist, including all visible fields, styling, layout, and field validation. Do not rebuild or replace that form. Add only the FormHarbour integration pieces below to the existing form.
 
@@ -381,7 +381,7 @@ fetch("PASTE_YOUR_EXEC_URL_HERE", {
 
 Apps Script Web Apps do not provide arbitrary response headers, custom status-code control, or a general doOptions() CORS handler. A cross-origin fetch may therefore be unable to read the response even when the server received the POST. Native form navigation or a same-origin server-side proxy is more reliable when response-readable CORS is required.
 
-## 11. Expected spreadsheet result
+## 11. 📋 Expected spreadsheet result
 
 For a submission from example.com, the script creates a tab named example.com.
 
@@ -448,7 +448,7 @@ The honeypot capture tab is the expected audit result; rejection is not a system
 
 Do not rename or delete the __FH_* system tabs. Do not grant general viewers access to those tabs because the queue contains operational recipient state.
 
-## 12. Expected notification email
+## 12. ✉️ Expected notification email
 
 The email is sent after the spreadsheet row is persisted.
 
@@ -477,7 +477,7 @@ When the form includes a valid configured confirmation email field, that submitt
 
 The confirmation is sent only after the spreadsheet row exists. It is tracked as an independent queue recipient, so a failed confirmation does not prevent admin notifications and a failed admin notification does not prevent the confirmation retry.
 
-## 13. Queue, quota, and trigger behavior
+## 13. 📬 Queue, quota, and trigger behavior
 
 After a successful save, doPost immediately attempts a small recipient batch, prioritizing the submitter confirmation when one is configured. The website response may show notificationStatus or confirmationStatus as processing while the remaining recipients stay in the durable queue. The one-minute trigger is the backup for remaining recipients, quota delays, and retries.
 
@@ -500,7 +500,7 @@ Run checkSystemHealth() to inspect pending notifications, failed notifications, 
 
 MailApp quota is account-wide and can be affected by other scripts or manual activity. The application reserve is conservative but cannot guarantee an account-wide reservation.
 
-## 14. Updating the backend
+## 14. 🔄 Updating the backend
 
 1. Edit Code.gs locally.
 2. Run the local automated suite from the repository root:
@@ -519,7 +519,7 @@ npm test
 
 Do not create a separate deployment for every code edit unless you intentionally need a separate endpoint. Updating the existing deployment keeps integrations pointed at the same URL.
 
-## 15. Troubleshooting
+## 15. 🩺 Troubleshooting
 
 | Symptom | Likely cause | Fix |
 | :--- | :--- | :--- |
@@ -538,7 +538,7 @@ Do not create a separate deployment for every code edit unless you intentionally
 | Website tab name or header changed | An authorized editor changed protected structure | Wait for the change trigger or run setup(); the saved name/header structure will be restored |
 | Test client shows Add the Web App URL | config.js still contains the placeholder | Replace EXEC_URL with the deployed /exec URL |
 
-## 16. Security and operational checklist
+## 16. 🔒 Security and operational checklist
 
 - Keep Spreadsheet sharing limited to people who need it.
 - Keep notification recipient addresses in Code.gs only.
@@ -550,7 +550,7 @@ Do not create a separate deployment for every code edit unless you intentionally
 - Review notification quota and queue health periodically.
 - Keep a backup/export strategy for high-volume historical submissions because Sheets is not unlimited storage.
 
-## 17. Final go-live checklist
+## 17. ✅ Final go-live checklist
 
 - [ ] Spreadsheet created and ID copied correctly.
 - [ ] SPREADSHEET_ID configured with the ID only.

@@ -1,8 +1,8 @@
-# Contributing to FormHarbour
+# Contributing to FormHarbour 🤝
 
 Thanks for helping improve FormHarbour.
 
-## Local checks
+## 🧪 Local checks
 
 Run the dependency-free test suite from the repository root:
 
@@ -16,7 +16,7 @@ Before opening a pull request, also check the Apps Script source syntax:
 Get-Content Code.gs -Raw | node --check --input-type=commonjs -
 ```
 
-## Apps Script workflow
+## ⚙️ Apps Script workflow
 
 `Code.gs` is copied into a Google Apps Script project. Do not commit real
 Spreadsheet IDs, notification addresses, deployed URLs, credentials, or form

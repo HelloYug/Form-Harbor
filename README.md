@@ -1,10 +1,12 @@
-# FormHarbour Google Apps Script backend
+# FormHarbour Google Apps Script backend 🛠️
 
 [![Tests](https://github.com/HelloYug/Form-Harbor/actions/workflows/test.yml/badge.svg)](https://github.com/HelloYug/Form-Harbor/actions/workflows/test.yml)
 
 FormHarbour is a universal Google Apps Script form backend. It receives forms from multiple websites, creates one Google Sheet tab per hostname, stores rows in Google Forms-style order, and delivers formatted email notifications through a durable queue.
 
-## Start here
+Created and maintained by [Yug Agarwal](https://yugagarwal.dev). Source code is available under the [MIT License](LICENSE).
+
+## 🚀 Start here
 
 This repository contains the source backend and a local browser test client. It
 does not include a live Spreadsheet ID, notification address, or deployed Web
@@ -24,7 +26,7 @@ Quick overview:
 5. Add _site, _submission_id, and _honeypot to each website form.
 6. Submit a test form and run checkSystemHealth().
 
-## Default settings
+## ⚙️ Default settings
 
 - SEND_CONFIRMATION_EMAILS: false
 - CONFIRMATION_EMAIL_FIELD_NAMES: ["email"]
@@ -32,7 +34,7 @@ Quick overview:
 - Immediate delivery attempts up to five queued recipients.
 - The recovery notification trigger runs every minute.
 
-## What the backend provides
+## ✨ What the backend provides
 
 - Timestamp first, followed by form fields in first-submission order, then protected operational columns.
 - Dynamic schema evolution without losing existing row values.
@@ -45,7 +47,7 @@ Quick overview:
 - The test client uses one transparent `formharbour-logo.png` asset for both the visible logo and favicon.
 - Formula-injection protection and bounded input validation.
 
-## Test locally
+## 🧪 Test locally
 
 Run the dependency-free test suite from the repository root:
 
@@ -57,7 +59,7 @@ The suite currently covers 17 behavioral scenarios.
 
 The manual browser client is in [test-form/](test-form/). It presents the FormHarbour brand with “by Yug Agarwal” attribution, links to [yugagarwal.dev](https://yugagarwal.dev), and includes a GitHub repository button. Configure its deployed URL in [test-form/config.js](test-form/config.js), then run `python -m http.server 4173 --bind 127.0.0.1` from that folder and open `http://127.0.0.1:4173/`.
 
-## Important files
+## 📁 Important files
 
 - [Code.gs](Code.gs) — self-contained Apps Script backend.
 - [docs/SETUP.md](docs/SETUP.md) — complete installation and operations guide.
@@ -65,14 +67,26 @@ The manual browser client is in [test-form/](test-form/). It presents the FormHa
 - [tests/Code.test.js](tests/Code.test.js) — local behavioral test harness.
 - [test-form/](test-form/) — small browser test client.
 
-## GitHub safety
+## 🔒 GitHub safety
 
 - Keep `SPREADSHEET_ID` and `NOTIFICATION_EMAILS` configured only for your own Apps Script copy.
 - Keep the deployed `/exec` URL configured only in your local `test-form/config.js` when appropriate.
 - Never commit Google credentials, private form submissions, exported spreadsheets, or other secrets.
 - The local test suite is intentionally included so changes can be checked before copying `Code.gs` into Apps Script.
 
-## After code changes
+## 👤 Author
+
+**Yug Agarwal** — code author and maintainer
+
+- Website: [yugagarwal.dev](https://yugagarwal.dev)
+- GitHub: [@HelloYug](https://github.com/HelloYug)
+- Project: [FormHarbour](https://github.com/HelloYug/Form-Harbor)
+
+## 📄 License
+
+FormHarbour is licensed under the [MIT License](LICENSE).
+
+## 🔄 After code changes
 
 Run npm test, copy the updated Code.gs into Apps Script, run setup() if triggers or permissions changed, and update the existing Web App deployment. Keep using the same /exec URL.
 
