@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A small FormHarbour test form for verifying Google Apps Script submissions.">
+  <title>FormHarbour Test Form</title>
+  <link rel="icon" type="image/png" href="./assets/formharbour-logo.png">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./config.js"></script>
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <main class="page-shell">
+    <header class="site-brandbar">
+      <a class="brand-lockup" href="https://yugagarwal.dev" target="_blank" rel="noopener noreferrer" aria-label="FormHarbour by Yug Agarwal">
+        <span class="brand-mark" aria-hidden="true"><img src="./assets/formharbour-logo.png" alt=""></span>
+        <span class="brand-copy">
+          <span class="brand-name">FormHarbour</span>
+          <span class="brand-byline">by Yug Agarwal</span>
+        </span>
+      </a>
+      <div class="brand-actions">
+        <span class="brand-pill">Universal form backend</span>
+        <a class="repo-button" href="https://github.com/HelloYug/Form-Harbor" target="_blank" rel="noopener noreferrer" aria-label="View the FormHarbour source code on GitHub">
+          <span>GitHub repo</span>
+          <span aria-hidden="true">↗</span>
+        </a>
+      </div>
+    </header>
+
+    <section class="intro-panel" aria-labelledby="page-title">
+      <p class="eyebrow">FormHarbour test client</p>
+      <h1 id="page-title">Send a <span class="accent-word">test</span> submission.</h1>
+      <p class="intro-copy">
+        Use this small form to verify the deployed Apps Script endpoint, website tab,
+        timestamp, dynamic headers, and notification email.
+      </p>
+      <div class="integration-note">
+        <span class="note-dot" aria-hidden="true"></span>
+        <span id="site-display">Source hostname is being detected…</span>
+      </div>
+      <p class="made-by">Reliable form handling, powered by <a href="https://yugagarwal.dev" target="_blank" rel="noopener noreferrer">FormHarbour by Yug Agarwal</a>.</p>
+    </section>
+
+    <section class="form-card" aria-labelledby="form-title">
+      <div class="card-heading">
+        <div>
+          <p class="section-kicker">Test submission</p>
+          <h2 id="form-title">Contact form payload</h2>
+          <p class="card-subtitle">Verify your endpoint, sheet schema, and email delivery.</p>
+        </div>
+        <span class="method-badge">POST</span>
+      </div>
+
+      <form id="test-form" method="post" novalidate>
+        <input type="hidden" name="_site" id="form-site">
+        <input type="hidden" name="_submission_id" id="form-submission-id">
+        <input class="honeypot-field" type="text" name="_honeypot" tabindex="-1" autocomplete="off" aria-hidden="true">
+
+        <div class="form-grid">
+          <div class="field-group">
+            <label for="name">Name <span aria-hidden="true">*</span></label>
+            <input id="name" name="name" type="text" autocomplete="name" required>
+          </div>
+
+          <div class="field-group">
+            <label for="email">Email <span aria-hidden="true">*</span></label>
+            <input id="email" name="email" type="email" autocomplete="email" required>
+          </div>
+
+          <div class="field-group">
+            <label for="phone">Phone</label>
+            <input id="phone" name="phone" type="tel" autocomplete="tel">
+          </div>
+
+          <div class="field-group">
+            <label for="subject">Subject</label>
+            <input id="subject" name="subject" type="text">
+          </div>
+
+          <div class="field-group field-group-wide">
+            <label for="message">Message <span aria-hidden="true">*</span></label>
+            <textarea id="message" name="message" rows="6" required></textarea>
+          </div>
+        </div>
+
+        <div class="form-footer">
+          <p class="required-note"><span aria-hidden="true">*</span> Required field</p>
+          <button id="submit-button" type="submit">
+            <span class="button-label">Send test submission</span>
+            <span class="button-arrow" aria-hidden="true">↗</span>
+            <span class="button-spinner" aria-hidden="true"></span>
+          </button>
+        </div>
+      </form>
+
+      <div id="form-status" class="status" role="status" aria-live="polite" hidden></div>
+    </section>
+  </main>
+</body>
+</html>
