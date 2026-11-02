@@ -8,7 +8,7 @@
 - **Core Value Proposition**: One Google Apps Script Web App endpoint accepts form submissions from multiple websites, stores each website in its own dynamically evolving Google Sheet tab, and sends recoverable per-recipient notifications.
 - **Target Audience / End Users**: Website owners who need a lightweight contact/form backend without operating a separate server or database.
 - **Repository Root**: `E:\Yug Storage\Desktop\Yug Study\Programming\FormHarbour`
-- **Current Operational Status**: Feature-complete local implementation with 22 behavioral tests passing; requires a real Spreadsheet ID, notification addresses, Apps Script authorization, and a live deployment before production use.
+- **Current Operational Status**: Feature-complete local implementation with 23 behavioral tests passing; requires a real Spreadsheet ID, notification addresses, Apps Script authorization, and a live deployment before production use.
 
 ## 2. 🧰 Technology Stack & Runtime Toolchain
 
@@ -105,9 +105,9 @@ Workbook-managed tabs:
 - `__FH_QUEUE`: queue lifecycle and JSON recipient states (`pending`, `processing`, `retry`, `sent`, `failed`).
 - `__FH_INDEX`: operational submission index containing digest, sheet, row, and timestamp.
 - `__FH_LOG`: bounded event log without raw request bodies or form values.
-- `__FH_SITE_CONFIG`: visible first-tab per-hostname notification routing table; unlisted sites use the global fallback recipients.
+- `__FH_SITE_CONFIG`: visible first-tab per-hostname routing and notification-controls table; unlisted sites use global recipient and confirmation defaults.
 
-On first setup, when no website tab exists, `__FH_SITE_CONFIG` contains only its protected header row. The first normal hostname website tab is automatically registered with the global fallback recipients and `TRUE` enabled status. A honeypot-only tab remains separate and uses the global fallback until a site row exists. Editors can then replace that row with site-specific recipients or disable the site.
+On first setup, when no website tab exists, `__FH_SITE_CONFIG` contains only its protected header row. The first normal hostname website tab is automatically registered with the global fallback recipients and the default `TRUE`, `FALSE`, `TRUE` values for enabled, confirmation email, and frontend notice. A honeypot-only tab remains separate and uses the global fallback until a site row exists. Editors can then replace that row with site-specific recipients or disable the site.
 
 ```mermaid
 erDiagram
@@ -196,13 +196,14 @@ erDiagram
 - [x] README explicitly documents required form integration fields and exact hostname handling.
 - [x] Notifications include a formatted HTML/plain-text site header and complete submitted-field table with size-limit markers.
 - [x] Notifications set a clear sender display name, subject hostname, and semantic HTML submission headings.
-- [x] Dependency-free Node test harness passes all 22 behavioral scenarios.
+- [x] Dependency-free Node test harness passes all 23 behavioral scenarios.
 - [x] Only five Apps Script functions remain visible as manual entry points; internal helpers are scoped privately and the spreadsheet-change handler is a non-enumerable trigger binding.
 - [x] doPost attempts a bounded recipient batch immediately after persistence, with the one-minute durable trigger as backup.
 - [x] Reserved submission ID, source site, and notification status columns are protected ranges and re-aligned after schema changes.
 - [x] Website header rows are protected, and renamed website tabs or edited headers are restored by the spreadsheet-change trigger.
 - [x] Valid submitter email fields receive separate saved-submission confirmations through the durable queue.
 - [x] Submitter email delivery and the local frontend success notice each have independent true/false configuration switches.
+- [x] Site configuration can independently override submitter confirmation emails and frontend saved-data notices; accepted/duplicate responses expose the resolved frontend setting.
 - [x] UUID-shaped submission IDs are displayed as compact `fh-` identifiers while preserving original-ID retry identity.
 - [x] Honeypot hits are stored in protected `honeypot - <site>` review tabs without entering normal website submissions; unread records use a five-day grouped digest queue.
 - [x] Honeypot review tabs provide an editable `Unread`/`Read` chip dropdown, protected mailed-status/window metadata, and normal submission email context for active unread records.
@@ -218,7 +219,7 @@ erDiagram
 - [x] The test client header includes a responsive GitHub repository button linking to the FormHarbour source repository.
 - [x] Local test-server instructions bind explicitly to IPv4 `127.0.0.1` to avoid the `[::]` wildcard display.
 - [x] setup() and checkSystemHealth() use the script lock while mutating or recalculating shared queue state.
-- [x] Node syntax checks, local IPv4 test-site serving, input-validation smoke tests, and 22 behavioral tests completed in the local workspace.
+- [x] Node syntax checks, local IPv4 test-site serving, input-validation smoke tests, and 23 behavioral tests completed in the local workspace.
 
 ### Known limitations
 

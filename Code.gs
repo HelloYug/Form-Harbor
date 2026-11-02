@@ -17,6 +17,10 @@ const CONFIG = {
   SEND_CONFIRMATION_EMAILS: false,
   CONFIRMATION_EMAIL_FIELD_NAMES: ["email"],
 
+  // Frontends can use the per-site response value to decide whether to show a
+  // browser-level saved-data notice. This is the global fallback.
+  SHOW_CONFIRMATION_NOTIFICATION: true,
+
   TIMEZONE: "Asia/Kolkata",
 
   EMAIL_QUOTA_RESERVE_PERCENT: 10
@@ -63,7 +67,13 @@ const SYSTEM_SHEETS = {
   LOG: "__FH_LOG"
 };
 const SITE_CONFIG_SHEET_NAME = "__FH_SITE_CONFIG";
-const SITE_CONFIG_HEADERS = ["site", "notification_emails", "enabled"];
+const SITE_CONFIG_HEADERS = [
+  "site",
+  "notification_emails",
+  "enabled",
+  "send_confirmation_emails",
+  "show_confirmation_notification"
+];
 
 // Website tabs intentionally follow the familiar Google Forms layout: the
 // first column is the human-readable timestamp, followed by user fields. The
@@ -208,6 +218,7 @@ var handleSubmissionRequest = function(e, requestId) {
   var parsed = parseRequest(e);
   var site = normalizeSite(parsed.fields._site);
   var recipients;
+  var siteConfiguration;
   var lock = LockService.getScriptLock();
 
   if (!lock.tryLock(DEFAULTS.LOCK_WAIT_MS)) {
@@ -227,7 +238,8 @@ var handleSubmissionRequest = function(e, requestId) {
     var spreadsheet = openConfiguredSpreadsheet();
     restoreRememberedSheetStructures(spreadsheet);
     ensureSystemSheets(spreadsheet);
-    recipients = getSiteNotificationRecipients(spreadsheet, site);
+    siteConfiguration = getSiteConfiguration(spreadsheet, site);
+    recipients = siteConfiguration.recipients;
     enforceRateLimit(site);
 
     // Honeypot submissions are deliberately recorded for review, but never
@@ -254,7 +266,7 @@ var handleSubmissionRequest = function(e, requestId) {
     // UUID-based forms can retry safely even though the visible ID is compacted.
     var idempotencySubmissionId = suppliedSubmissionId || submissionId;
     var normalizedFields = normalizeFields(parsed.fields);
-    var confirmationEmailsEnabled = CONFIG.SEND_CONFIRMATION_EMAILS === true;
+    var confirmationEmailsEnabled = siteConfiguration.sendConfirmationEmails;
     var confirmationEmail = confirmationEmailsEnabled ? findConfirmationEmail(normalizedFields) : "";
     // Hash the normalized user payload rather than raw control fields. This
     // makes harmless hostname casing/www normalization behave as one retryable
@@ -284,6 +296,7 @@ var handleSubmissionRequest = function(e, requestId) {
         sourceWebsite: duplicate.sourceSite,
         notificationStatus: duplicate.notificationStatus || "unknown",
         confirmationStatus: duplicate.confirmationStatus || "unknown",
+        showConfirmationNotification: siteConfiguration.showConfirmationNotification,
         message: "This submission was already accepted."
       };
     }
@@ -393,6 +406,7 @@ var handleSubmissionRequest = function(e, requestId) {
       sourceWebsite: site,
       notificationStatus: notificationStatus,
       confirmationStatus: initialConfirmationStatus,
+      showConfirmationNotification: siteConfiguration.showConfirmationNotification,
       message: queueError
         ? "Submission stored. Notification delivery was deferred and will require recovery."
         : (indexWarning || statusWarning || idempotencyWarning
@@ -694,15 +708,20 @@ var ensureSiteConfigSheet = function(spreadsheet) {
   });
   if (!headersMatch) sheet.getRange(1, 1, 1, SITE_CONFIG_HEADERS.length).setValues([SITE_CONFIG_HEADERS]);
   protectHeaderRow(sheet, SITE_CONFIG_HEADERS);
-  if (SpreadsheetApp.newDataValidation) {
-    var enabledRule = SpreadsheetApp.newDataValidation()
-      .requireValueInList(["TRUE", "FALSE"], true)
-      .setAllowInvalid(false)
-      .build();
-    sheet.getRange(2, 3, Math.max(1, sheet.getMaxRows() - 1), 1).setDataValidation(enabledRule);
-  }
   rememberSheetStructure(sheet, SITE_CONFIG_HEADERS, "config");
   return sheet;
+}
+
+/** Applies strict TRUE/FALSE dropdown validation to site-level switches. */
+var applySiteConfigBooleanValidation = function(sheet, startRow, rowCount) {
+  if (!SpreadsheetApp.newDataValidation) return;
+  var booleanRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(["TRUE", "FALSE"], true)
+    .setAllowInvalid(false)
+    .build();
+  [3, 4, 5].forEach(function(column) {
+    sheet.getRange(startRow, column, Math.max(1, rowCount), 1).setDataValidation(booleanRule);
+  });
 }
 
 var ensureSiteConfigFirst = function(spreadsheet) {
@@ -1126,18 +1145,35 @@ var normalizeRecipients = function(configured) {
   return { valid: valid, invalid: invalid };
 }
 
-var siteConfigEnabled = function(value) {
+var parseSiteConfigBoolean = function(value, fallback) {
   var normalized = String(value === null || typeof value === "undefined" ? "" : value).trim().toLowerCase();
-  return ["false", "0", "no", "disabled", "off"].indexOf(normalized) < 0;
+  if (!normalized) return { value: Boolean(fallback), valid: true };
+  if (["true", "1", "yes", "enabled", "on"].indexOf(normalized) >= 0) {
+    return { value: true, valid: true };
+  }
+  if (["false", "0", "no", "disabled", "off"].indexOf(normalized) >= 0) {
+    return { value: false, valid: true };
+  }
+  return { value: Boolean(fallback), valid: false };
 }
 
-/** Returns site-specific recipients, falling back to the global configuration. */
-var getSiteNotificationRecipients = function(spreadsheet, site) {
+var siteConfigEnabled = function(value) {
+  return parseSiteConfigBoolean(value, true).value;
+}
+
+/** Returns all site-level controls, falling back to the global configuration. */
+var getSiteConfiguration = function(spreadsheet, site) {
   var fallback = normalizeRecipients(CONFIG.NOTIFICATION_EMAILS);
   fallback.source = "global_fallback";
   fallback.configured = false;
+  var configuration = {
+    recipients: fallback,
+    sendConfirmationEmails: CONFIG.SEND_CONFIRMATION_EMAILS === true,
+    showConfirmationNotification: CONFIG.SHOW_CONFIRMATION_NOTIFICATION !== false,
+    configured: false
+  };
   var sheet = spreadsheet.getSheetByName(SITE_CONFIG_SHEET_NAME);
-  if (!sheet || sheet.getLastRow() < 2) return fallback;
+  if (!sheet || sheet.getLastRow() < 2) return configuration;
   var rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, SITE_CONFIG_HEADERS.length).getValues();
   for (var i = 0; i < rows.length; i++) {
     var configuredSite = String(rows[i][0] || "").trim();
@@ -1149,15 +1185,28 @@ var getSiteNotificationRecipients = function(spreadsheet, site) {
       continue;
     }
     if (normalizedSite !== site) continue;
-    if (!siteConfigEnabled(rows[i][2])) {
-      return { valid: [], invalid: [], source: "site_disabled", configured: true };
+    var enabled = parseSiteConfigBoolean(rows[i][2], true);
+    var confirmationEmails = parseSiteConfigBoolean(rows[i][3], configuration.sendConfirmationEmails);
+    var frontendNotification = parseSiteConfigBoolean(rows[i][4], configuration.showConfirmationNotification);
+    configuration.sendConfirmationEmails = confirmationEmails.value;
+    configuration.showConfirmationNotification = frontendNotification.value;
+    configuration.configured = true;
+    if (!enabled.value) {
+      configuration.recipients = { valid: [], invalid: [], source: "site_disabled", configured: true };
+      return configuration;
     }
     var selected = normalizeRecipients(rows[i][1]);
     selected.source = "site_config";
     selected.configured = true;
-    return selected;
+    configuration.recipients = selected;
+    return configuration;
   }
-  return fallback;
+  return configuration;
+}
+
+/** Returns site-specific recipients, falling back to the global configuration. */
+var getSiteNotificationRecipients = function(spreadsheet, site) {
+  return getSiteConfiguration(spreadsheet, site).recipients;
 }
 
 var ensureSiteConfigRow = function(spreadsheet, site) {
@@ -1171,7 +1220,14 @@ var ensureSiteConfigRow = function(spreadsheet, site) {
     if (exists) return;
   }
   var fallback = normalizeRecipients(CONFIG.NOTIFICATION_EMAILS).valid.join(", ");
-  sheet.appendRow([site, fallback, "TRUE"]);
+  sheet.appendRow([
+    site,
+    fallback,
+    "TRUE",
+    CONFIG.SEND_CONFIRMATION_EMAILS === true ? "TRUE" : "FALSE",
+    CONFIG.SHOW_CONFIRMATION_NOTIFICATION === false ? "FALSE" : "TRUE"
+  ]);
+  applySiteConfigBooleanValidation(sheet, sheet.getLastRow(), 1);
 }
 
 var siteNameForWorkbookSheet = function(sheet) {
@@ -1218,8 +1274,13 @@ var inspectSiteConfig = function(spreadsheet) {
     if (seen[site]) result.duplicateSites.push(site);
     seen[site] = true;
     result.configuredSiteCount++;
-    if (!siteConfigEnabled(row[2])) result.disabledSiteCount++;
-    if (siteConfigEnabled(row[2]) && !normalizeRecipients(row[1]).valid.length) result.invalidRows.push(index + 2);
+    var enabled = parseSiteConfigBoolean(row[2], true);
+    var sendConfirmation = parseSiteConfigBoolean(row[3], CONFIG.SEND_CONFIRMATION_EMAILS === true);
+    var showNotification = parseSiteConfigBoolean(row[4], CONFIG.SHOW_CONFIRMATION_NOTIFICATION !== false);
+    var invalid = !enabled.valid || !sendConfirmation.valid || !showNotification.valid;
+    if (!enabled.value) result.disabledSiteCount++;
+    if (enabled.value && !normalizeRecipients(row[1]).valid.length) invalid = true;
+    if (invalid) result.invalidRows.push(index + 2);
   });
   return result;
 }
@@ -2215,13 +2276,6 @@ var restoreRememberedSheetStructures = function(spreadsheet) {
       protectHoneypotStructure(sheet, expectedHeaders);
     } else if (expected.kind === "config") {
       protectHeaderRow(sheet, SITE_CONFIG_HEADERS);
-      if (SpreadsheetApp.newDataValidation) {
-        var enabledRule = SpreadsheetApp.newDataValidation()
-          .requireValueInList(["TRUE", "FALSE"], true)
-          .setAllowInvalid(false)
-          .build();
-        sheet.getRange(2, 3, Math.max(1, sheet.getMaxRows() - 1), 1).setDataValidation(enabledRule);
-      }
       remaining[id].headers = SITE_CONFIG_HEADERS.slice();
       rememberSheetStructure(sheet, SITE_CONFIG_HEADERS, "config");
     } else if (expected.kind === "system") {

@@ -170,7 +170,7 @@ Code:
 
 ~~~javascript
 const EXEC_URL = "PASTE_YOUR_EXEC_URL_HERE";
-const SHOW_CONFIRMATION_NOTIFICATION = true;
+const SHOW_CONFIRMATION_NOTIFICATION = true; // fallback; site config may override it
 const form = document.querySelector("#contact-form");
 const statusBox = document.querySelector("#form-status");
 let submissionId = createSubmissionId();
@@ -192,7 +192,10 @@ form.addEventListener("submit", async function (event) {
     const result = await response.json();
 
     if (result.status === "accepted" || result.status === "duplicate") {
-      if (SHOW_CONFIRMATION_NOTIFICATION) {
+      const showNotice = typeof result.showConfirmationNotification === "boolean"
+        ? result.showConfirmationNotification
+        : SHOW_CONFIRMATION_NOTIFICATION;
+      if (showNotice) {
         showStatus(
           "success",
           result.status === "duplicate"
@@ -226,6 +229,8 @@ The frontend notification is independent from submitter confirmation email. The 
 SHOW_CONFIRMATION_NOTIFICATION: true
 ~~~
 
+For a site configured in `__FH_SITE_CONFIG`, the backend response includes `showConfirmationNotification`. Use that boolean when present; otherwise use the frontend fallback. The site setting controls only the browser notice and does not disable storage, admin email, or submitter confirmation email delivery.
+
 ## 6. ✉️ Enable the saved-data confirmation email
 
 Prompt:
@@ -253,6 +258,8 @@ CONFIRMATION_EMAIL_FIELD_NAMES: ["email"]
 ~~~
 
 The default is SEND_CONFIRMATION_EMAILS: false. When enabled, the confirmation is queued only after the Sheet row is saved and includes the website name, timestamp, submission ID, and submitted fields.
+
+The per-site `send_confirmation_emails` column overrides the global backend default for that hostname. The per-site `show_confirmation_notification` column independently controls the frontend saved-data notice through the POST response.
 
 ## 7. 🧩 Use JSON from a same-origin or compatible client
 

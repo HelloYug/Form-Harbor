@@ -553,7 +553,14 @@ test("setup is idempotent and initializes protected system sheets", () => {
   assert.ok(config);
   assert.equal(harness.spreadsheet.getSheets()[0].getName(), "__FH_SITE_CONFIG");
   assert.equal(config.isSheetHidden(), false);
-  assert.deepEqual(config.getRange(1, 1, 1, 3).getValues()[0], ["site", "notification_emails", "enabled"]);
+  assert.deepEqual(config.getRange(1, 1, 1, 5).getValues()[0], [
+    "site",
+    "notification_emails",
+    "enabled",
+    "send_confirmation_emails",
+    "show_confirmation_notification"
+  ]);
+  assert.equal(config.dataValidations.length, 0);
   assert.equal(harness.triggers.find((trigger) => trigger.handler === "processPendingNotifications").interval, 1);
   assert.ok(harness.spreadsheet.getSheetByName("__FH_QUEUE").isSheetHidden());
   assert.ok(harness.spreadsheet.getSheetByName("__FH_INDEX").isSheetHidden());
@@ -667,6 +674,38 @@ test("routes notifications by website configuration with global fallback", () =>
   );
 });
 
+test("routes confirmation email and frontend notice settings per website", () => {
+  const harness = makeHarness({ recipients: ["fallback@example.com"], confirmationEmails: false });
+  harness.context.setup();
+  const config = harness.spreadsheet.getSheetByName("__FH_SITE_CONFIG");
+  config.getRange(2, 1, 2, 5).setValues([
+    ["site-a.com", "a@example.com", "TRUE", "TRUE", "FALSE"],
+    ["site-b.com", "b@example.com", "TRUE", "FALSE", "TRUE"]
+  ]);
+
+  const siteA = harness.postForm({
+    _site: "site-a.com",
+    _submission_id: "site-a-settings-1",
+    email: "submitter-a@example.com",
+    name: "A"
+  });
+  const siteB = harness.postForm({
+    _site: "site-b.com",
+    _submission_id: "site-b-settings-1",
+    email: "submitter-b@example.com",
+    name: "B"
+  });
+
+  assert.equal(siteA.showConfirmationNotification, false);
+  assert.equal(siteA.confirmationStatus, "processing");
+  assert.equal(siteB.showConfirmationNotification, true);
+  assert.equal(siteB.confirmationStatus, "disabled");
+  assert.deepEqual(
+    harness.mail.sentMail.map((mail) => mail.to),
+    ["submitter-a@example.com", "a@example.com", "b@example.com"]
+  );
+});
+
 test("automatically adds new website sheets to site configuration", () => {
   const harness = makeHarness({ recipients: ["fallback@example.com"] });
   harness.postForm({ _site: "created.example.com", _submission_id: "created-1", name: "Created" });
@@ -676,6 +715,14 @@ test("automatically adds new website sheets to site configuration", () => {
     "fallback@example.com",
     "TRUE"
   ]);
+  assert.deepEqual(
+    config.dataValidations.slice(-3).map((validation) => [validation.row, validation.column, validation.rule.values.join(",")]),
+    [
+      [2, 3, "TRUE,FALSE"],
+      [2, 4, "TRUE,FALSE"],
+      [2, 5, "TRUE,FALSE"]
+    ]
+  );
 
   harness.spreadsheet.insertSheet("manual.example.com");
   harness.context.handleSpreadsheetChange({ changeType: "INSERT_GRID" });

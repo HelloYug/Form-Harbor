@@ -30,12 +30,13 @@ Quick overview:
 ## ⚙️ Default settings
 
 - SEND_CONFIRMATION_EMAILS: false
+- SHOW_CONFIRMATION_NOTIFICATION: true global fallback; per-site overrides are returned in the POST response
 - CONFIRMATION_EMAIL_FIELD_NAMES: ["email"]
 - SHOW_CONFIRMATION_NOTIFICATION: true in test-form/config.js
 - Immediate delivery attempts up to five queued recipients.
 - The recovery notification trigger runs every minute.
 - `__FH_SITE_CONFIG` stays as the first workbook tab and provides per-website recipients, with global `CONFIG.NOTIFICATION_EMAILS` as fallback.
-- On a brand-new workbook, `__FH_SITE_CONFIG` starts with only its header row. The first website submission automatically adds that hostname with the global recipients and `TRUE` enabled status.
+- On a brand-new workbook, `__FH_SITE_CONFIG` starts with only its header row. The first website submission automatically adds that hostname with the global recipients and the default settings `TRUE`, `FALSE`, `TRUE` for enabled, confirmation email, and frontend notice.
 
 ## ✨ What the backend provides
 
@@ -46,6 +47,7 @@ Quick overview:
 - System-created tabs are automatically restored to their managed names if renamed.
 - Internal queue, index, and log sheets are hidden and protected from non-owner manual edits.
 - `__FH_SITE_CONFIG` automatically registers new hostname tabs and lets each site override or disable its recipients.
+- `__FH_SITE_CONFIG` also controls per-site submitter confirmation emails and frontend saved-data notices.
 - Duplicate-safe submission handling with compact displayed IDs.
 - Formatted HTML/plain-text admin notifications and optional submitter confirmations.
 - Per-recipient retries, quota protection, leases, health diagnostics, and separate honeypot capture tabs with five-day unread review digests.
@@ -63,7 +65,7 @@ Run the dependency-free test suite from the repository root:
 npm test
 ~~~
 
-The suite currently covers 22 behavioral scenarios.
+The suite currently covers 23 behavioral scenarios.
 
 The manual browser client is in [test-form/](test-form/). It presents the FormHarbour brand with “by Yug Agarwal” attribution, links to [yugagarwal.dev](https://yugagarwal.dev), and includes a GitHub repository button. Configure its deployed URL in [test-form/config.js](test-form/config.js), then run `python -m http.server 4173 --bind 127.0.0.1` from that folder and open `http://127.0.0.1:4173/`.
 

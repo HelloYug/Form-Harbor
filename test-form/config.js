@@ -13,7 +13,8 @@ window.FORMHARBOUR_CONFIG = Object.freeze({
   EXEC_URL: "PASTE_YOUR_DEPLOYED_EXEC_URL_HERE",
   SITE_OVERRIDE: "test.example.com",
 
-  // Set false if this frontend should not show the browser-level saved notice.
+  // Fallback for clients before the backend response is available. A matching
+  // __FH_SITE_CONFIG row can override this per website in the POST response.
   // This does not change backend storage or email delivery.
   SHOW_CONFIRMATION_NOTIFICATION: true
 });

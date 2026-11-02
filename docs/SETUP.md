@@ -78,6 +78,8 @@ const CONFIG = {
 
   SEND_CONFIRMATION_EMAILS: false,
 
+  SHOW_CONFIRMATION_NOTIFICATION: true,
+
   CONFIRMATION_EMAIL_FIELD_NAMES: ["email"],
 
   TIMEZONE: "Asia/Kolkata",
@@ -128,16 +130,19 @@ Do not add recipient addresses to browser JavaScript. They belong only in Code.g
 
 Run `setup()` once. It creates a visible `__FH_SITE_CONFIG` tab in the same workbook and keeps it as the first sheet tab. Add one row per normalized website hostname:
 
-| site | notification_emails | enabled |
-|---|---|---|
-| `site-a.com` | `a@example.com, b@example.com, c@example.com` | `TRUE` |
-| `site-b.com` | `c@example.com; d@example.com; f@example.com` | `TRUE` |
+| site | notification_emails | enabled | send_confirmation_emails | show_confirmation_notification |
+|---|---|---|---|---|
+| `site-a.com` | `a@example.com, b@example.com, c@example.com` | `TRUE` | `FALSE` | `TRUE` |
+| `site-b.com` | `c@example.com; d@example.com; f@example.com` | `TRUE` | `TRUE` | `FALSE` |
 
 Rules:
 
 - Use only the hostname: no `https://`, path, or port.
 - Separate recipient addresses with commas, semicolons, or new lines.
 - Set `enabled` to `FALSE` to store submissions without sending admin notifications for that site.
+- Set `send_confirmation_emails` to `TRUE` to send a saved-data confirmation to a valid configured email field for that site.
+- Set `show_confirmation_notification` to `TRUE` or `FALSE` to control the frontend saved-data notice for compatible JavaScript clients.
+- Leave either new setting blank to inherit the corresponding global `CONFIG` default.
 - A configured site row overrides the global `CONFIG.NOTIFICATION_EMAILS` list.
 - A site without a row uses the global list as a backward-compatible fallback.
 - The recipient list is captured when the submission is queued; editing the config later affects new submissions, not already-queued mail.
@@ -147,14 +152,14 @@ The site configuration header is protected. Keep one row per hostname; duplicate
 
 On a brand-new workbook with no website tab, the sheet contains only the header:
 
-| site | notification_emails | enabled |
-|---|---|---|
+| site | notification_emails | enabled | send_confirmation_emails | show_confirmation_notification |
+|---|---|---|---|---|
 
 There are no data rows below this header until a hostname tab is detected or a submission creates one.
 
-The global `CONFIG.NOTIFICATION_EMAILS` list remains the fallback; it is not copied into a blank placeholder row. When the first normal website submission creates a hostname tab, FormHarbour automatically adds that hostname to `__FH_SITE_CONFIG` with the current global recipients and `TRUE`. A manually created hostname-named website tab is also registered by the spreadsheet-change trigger. A honeypot-only submission creates only its separate review tab and continues using the global fallback until a site row is added. Existing rows are never overwritten, so edit the row to assign site-specific recipients.
+The global `CONFIG.NOTIFICATION_EMAILS` list remains the fallback; it is not copied into a blank placeholder row. When the first normal website submission creates a hostname tab, FormHarbour automatically adds that hostname to `__FH_SITE_CONFIG` with the current global recipients, `TRUE`, `FALSE`, and `TRUE` defaults. A manually created hostname-named website tab is also registered by the spreadsheet-change trigger. A honeypot-only submission creates only its separate review tab and continues using the global fallback until a site row is added. Existing rows are never overwritten, so edit the row to assign site-specific recipients and behavior.
 
-The `enabled` column uses a `TRUE`/`FALSE` dropdown. `FALSE` stores the submission but disables admin and honeypot-digest notifications for that site. Changing the row affects new submissions and newly queued digest work; recipients already captured in the durable queue are not rewritten.
+The `enabled`, `send_confirmation_emails`, and `show_confirmation_notification` cells on each FormHarbour-created row use `TRUE`/`FALSE` dropdowns. FormHarbour applies validation only to the newly added row, not to the unused rows below it. `enabled = FALSE` stores the submission but disables admin and honeypot-digest notifications for that site; the two independent settings still control submitter confirmation and frontend behavior. Changing a row affects new submissions and newly queued digest work; recipients or confirmation settings already captured in the durable queue are not rewritten.
 
 ### Managed sheet names
 
@@ -169,6 +174,16 @@ SEND_CONFIRMATION_EMAILS: false
 ~~~
 
 Set it to `true` to enable confirmation emails. Leave it `false` to keep confirmation emails disabled while form storage and admin notifications remain active. The backend response reports `confirmationStatus: "disabled"` when this switch is off.
+
+### SHOW_CONFIRMATION_NOTIFICATION
+
+The global default is `true`:
+
+~~~javascript
+SHOW_CONFIRMATION_NOTIFICATION: true
+~~~
+
+This is the fallback for frontend clients. A matching `__FH_SITE_CONFIG` row can override it through `show_confirmation_notification`. JavaScript clients should use the `showConfirmationNotification` boolean returned in accepted and duplicate POST responses. Native form navigation cannot apply a response setting before leaving the page, so use client-side submission handling when a per-site browser notice is required.
 
 ### CONFIRMATION_EMAIL_FIELD_NAMES
 

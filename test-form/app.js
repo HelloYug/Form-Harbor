@@ -96,7 +96,10 @@
       }
 
       if (result && (result.status === "accepted" || result.status === "duplicate")) {
-        if (showConfirmationNotification) {
+        var responseNotificationSetting = typeof result.showConfirmationNotification === "boolean"
+          ? result.showConfirmationNotification
+          : showConfirmationNotification;
+        if (responseNotificationSetting) {
           var confirmationInProgress = result.confirmationStatus === "queued" || result.confirmationStatus === "processing";
           setStatus(
             "success",
