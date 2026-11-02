@@ -34,6 +34,7 @@ const DEFAULTS = {
   MAX_EMAIL_RECIPIENTS: 500,
   IMMEDIATE_EMAILS_PER_SUBMISSION: 5,
   NOTIFICATION_TRIGGER_MINUTES: 1,
+  HONEYPOT_REVIEW_WINDOW_MS: 5 * 24 * 60 * 60 * 1000,
   RATE_WINDOW_MS: 60 * 1000,
   MAX_REQUESTS_PER_SITE_WINDOW: 30,
   MAX_NEW_SHEETS_PER_HOUR: 20,
@@ -61,12 +62,31 @@ const SYSTEM_SHEETS = {
   INDEX: "__FH_INDEX",
   LOG: "__FH_LOG"
 };
+const SITE_CONFIG_SHEET_NAME = "__FH_SITE_CONFIG";
+const SITE_CONFIG_HEADERS = ["site", "notification_emails", "enabled"];
 
 // Website tabs intentionally follow the familiar Google Forms layout: the
 // first column is the human-readable timestamp, followed by user fields. The
 // reserved operational columns are appended after those fields.
 const TIMESTAMP_HEADER = "Timestamp";
 const HONEYPOT_SHEET_PREFIX = "honeypot - ";
+const HONEYPOT_READ_STATUS_HEADER = "__fh_honeypot_read_status";
+const HONEYPOT_MAILED_STATUS_HEADER = "__fh_honeypot_mailed_status";
+const HONEYPOT_WINDOW_ID_HEADER = "__fh_honeypot_window_id";
+const HONEYPOT_WINDOW_DEADLINE_HEADER = "__fh_honeypot_window_deadline";
+const HONEYPOT_MANAGED_HEADERS = [
+  HONEYPOT_READ_STATUS_HEADER,
+  HONEYPOT_MAILED_STATUS_HEADER,
+  HONEYPOT_WINDOW_ID_HEADER,
+  HONEYPOT_WINDOW_DEADLINE_HEADER
+];
+const HONEYPOT_READ_UNREAD = "Unread";
+const HONEYPOT_READ_READ = "Read";
+const HONEYPOT_MAIL_PENDING = "Pending";
+const HONEYPOT_MAIL_QUEUED = "Queued";
+const HONEYPOT_MAIL_MAILED = "Mailed";
+const HONEYPOT_MAIL_NOT_REQUIRED = "Not required";
+const HONEYPOT_MAIL_FAILED = "Failed";
 const METADATA_HEADERS = [
   "__fh_submission_id",
   TIMESTAMP_HEADER,
@@ -82,6 +102,8 @@ const PROTECTED_METADATA_HEADERS = [
 
 const PROTECTION_DESCRIPTION_PREFIX = "FormHarbour reserved metadata: ";
 const HEADER_PROTECTION_DESCRIPTION = "FormHarbour locked header row";
+const SYSTEM_HEADER_PROTECTION_DESCRIPTION = "FormHarbour locked system header row";
+const SYSTEM_SHEET_PROTECTION_DESCRIPTION = "FormHarbour locked system sheet";
 
 const QUEUE_HEADERS = [
   "queue_id",
@@ -159,7 +181,7 @@ function doPost(e) {
     return jsonResponse(result);
   } catch (error) {
     var safeError = normalizeError(error);
-    safeLog("unexpected_error", safeError.code + " request=" + requestId);
+    safeLog("unexpected_error", safeError.code + " request=" + requestId + " detail=" + safeErrorText(error));
     var responseStatus = safeError.code === "unexpected_error"
       ? "failed"
       : (safeError.retryable ? "retryable" : "rejected");
@@ -185,7 +207,7 @@ function doPost(e) {
 var handleSubmissionRequest = function(e, requestId) {
   var parsed = parseRequest(e);
   var site = normalizeSite(parsed.fields._site);
-  var recipients = normalizeRecipients(CONFIG.NOTIFICATION_EMAILS);
+  var recipients;
   var lock = LockService.getScriptLock();
 
   if (!lock.tryLock(DEFAULTS.LOCK_WAIT_MS)) {
@@ -203,12 +225,14 @@ var handleSubmissionRequest = function(e, requestId) {
   var response;
   try {
     var spreadsheet = openConfiguredSpreadsheet();
-    ensureSystemSheets(spreadsheet);
     restoreRememberedSheetStructures(spreadsheet);
+    ensureSystemSheets(spreadsheet);
+    recipients = getSiteNotificationRecipients(spreadsheet, site);
     enforceRateLimit(site);
 
     // Honeypot submissions are deliberately recorded for review, but never
-    // enter the normal website tab, idempotency store, or notification queue.
+    // enter the normal website tab or idempotency store. A later worker may
+    // queue one grouped review digest after the five-day review window.
     // Recording occurs after the same validation, rate limit, and lock checks
     // used by real submissions so bots cannot create unlimited tabs or rows.
     if (parsed.honeypotDetected) {
@@ -618,7 +642,8 @@ var digestSubmission = function(site, submissionId, fields) {
 }
 
 // Spreadsheet and dynamic-schema helpers. Website tabs contain only metadata
-// plus submitted fields; queue and diagnostics live in hidden system tabs.
+// plus submitted fields; queue and diagnostics live in hidden system tabs, and
+// site-specific notification routing lives in the visible __FH_SITE_CONFIG tab.
 /** Computes a stable hex SHA-256 digest for idempotency and safe property keys. */
 var sha256 = function(value) {
   var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, value, Utilities.Charset.UTF_8);
@@ -643,6 +668,8 @@ var ensureSystemSheets = function(spreadsheet) {
   ensureSystemSheet(spreadsheet, SYSTEM_SHEETS.QUEUE, QUEUE_HEADERS);
   ensureSystemSheet(spreadsheet, SYSTEM_SHEETS.INDEX, INDEX_HEADERS);
   ensureSystemSheet(spreadsheet, SYSTEM_SHEETS.LOG, LOG_HEADERS);
+  ensureSiteConfigSheet(spreadsheet);
+  ensureSiteConfigFirst(spreadsheet);
 }
 
 var ensureSystemSheet = function(spreadsheet, name, headers) {
@@ -650,7 +677,45 @@ var ensureSystemSheet = function(spreadsheet, name, headers) {
   if (!sheet) sheet = spreadsheet.insertSheet(name);
   if (sheet.getLastRow() === 0) sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   if (!sheet.isSheetHidden()) sheet.hideSheet();
+  protectHeaderRow(sheet, headers, SYSTEM_HEADER_PROTECTION_DESCRIPTION);
+  protectSystemSheet(sheet);
+  rememberSheetStructure(sheet, headers, "system");
   return sheet;
+}
+
+var ensureSiteConfigSheet = function(spreadsheet) {
+  var sheet = spreadsheet.getSheetByName(SITE_CONFIG_SHEET_NAME);
+  if (!sheet) sheet = spreadsheet.insertSheet(SITE_CONFIG_SHEET_NAME);
+  var currentHeaders = sheet.getLastColumn()
+    ? sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]
+    : [];
+  var headersMatch = currentHeaders.length === SITE_CONFIG_HEADERS.length && SITE_CONFIG_HEADERS.every(function(header, index) {
+    return canonicalHeader(currentHeaders[index]) === canonicalHeader(header);
+  });
+  if (!headersMatch) sheet.getRange(1, 1, 1, SITE_CONFIG_HEADERS.length).setValues([SITE_CONFIG_HEADERS]);
+  protectHeaderRow(sheet, SITE_CONFIG_HEADERS);
+  if (SpreadsheetApp.newDataValidation) {
+    var enabledRule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(["TRUE", "FALSE"], true)
+      .setAllowInvalid(false)
+      .build();
+    sheet.getRange(2, 3, Math.max(1, sheet.getMaxRows() - 1), 1).setDataValidation(enabledRule);
+  }
+  rememberSheetStructure(sheet, SITE_CONFIG_HEADERS, "config");
+  return sheet;
+}
+
+var ensureSiteConfigFirst = function(spreadsheet) {
+  var sheet = spreadsheet.getSheetByName(SITE_CONFIG_SHEET_NAME);
+  if (!sheet) return;
+  try {
+    if (typeof spreadsheet.setActiveSheet === "function" && typeof spreadsheet.moveActiveSheet === "function") {
+      spreadsheet.setActiveSheet(sheet);
+      spreadsheet.moveActiveSheet(1);
+    }
+  } catch (error) {
+    safeLog("site_config_order_failure", normalizeError(error).code);
+  }
 }
 
 /** Creates a managed tab under the caller's script lock. */
@@ -684,6 +749,7 @@ var getOrCreateManagedSheet = function(spreadsheet, name) {
  */
 var getOrCreateSiteSheet = function(spreadsheet, site) {
   var sheet = getOrCreateManagedSheet(spreadsheet, siteTabName(site));
+  ensureSiteConfigRow(spreadsheet, site);
   // Start with the Google Forms-compatible first column. ensureSiteHeaders()
   // will append user fields and the reserved operational columns in one
   // ordered schema pass before the first row is written.
@@ -734,13 +800,28 @@ var recordHoneypotSubmission = function(spreadsheet, site, fields) {
 
   var schema = ensureHoneypotHeaders(sheet, entries);
   protectHoneypotStructure(sheet, schema.headers);
+  normalizeLegacyHoneypotRows(sheet, schema);
+  var now = new Date().getTime();
+  var reviewWindow = findActiveHoneypotWindow(sheet, schema, now);
+  if (!reviewWindow) {
+    reviewWindow = {
+      id: "hp-" + Utilities.getUuid().replace(/[^a-zA-Z0-9]/g, "").substring(0, 20),
+      deadlineAt: now + Number(DEFAULTS.HONEYPOT_REVIEW_WINDOW_MS)
+    };
+  }
   var row = new Array(schema.headers.length).fill("");
   row[schema.positions[canonicalHeader(TIMESTAMP_HEADER)]] = formatIst(new Date());
+  row[schema.positions[canonicalHeader(HONEYPOT_READ_STATUS_HEADER)]] = HONEYPOT_READ_UNREAD;
+  row[schema.positions[canonicalHeader(HONEYPOT_MAILED_STATUS_HEADER)]] = HONEYPOT_MAIL_PENDING;
+  row[schema.positions[canonicalHeader(HONEYPOT_WINDOW_ID_HEADER)]] = reviewWindow.id;
+  row[schema.positions[canonicalHeader(HONEYPOT_WINDOW_DEADLINE_HEADER)]] = new Date(reviewWindow.deadlineAt).toISOString();
   entries.forEach(function(entry) {
     var index = schema.positions[canonicalHeader(entry.displayName)];
     if (index !== undefined) row[index] = cellValue(entry.values);
   });
-  sheet.getRange(sheet.getLastRow() + 1, 1, 1, row.length).setValues([row]);
+  var rowNumber = sheet.getLastRow() + 1;
+  sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
+  applyHoneypotReadValidation(sheet, schema.headers);
 }
 
 /** Evolves a honeypot capture tab while preserving its received field order. */
@@ -752,19 +833,25 @@ var ensureHoneypotHeaders = function(sheet, entries) {
   currentHeaders.forEach(function(header) {
     var text = String(header || "").trim();
     var canonical = canonicalHeader(text);
-    if (!text || canonical === canonicalHeader(TIMESTAMP_HEADER) || seen[canonical]) return;
+    var isManaged = HONEYPOT_MANAGED_HEADERS.some(function(managedHeader) {
+      return canonical === canonicalHeader(managedHeader);
+    });
+    if (!text || canonical === canonicalHeader(TIMESTAMP_HEADER) || isManaged || seen[canonical]) return;
     seen[canonical] = true;
     userHeaders.push(text);
   });
   entries.forEach(function(entry) {
     var canonical = canonicalHeader(entry.displayName);
-    if (!seen[canonical]) {
+    var isManaged = HONEYPOT_MANAGED_HEADERS.some(function(managedHeader) {
+      return canonical === canonicalHeader(managedHeader);
+    });
+    if (!isManaged && !seen[canonical]) {
       seen[canonical] = true;
       userHeaders.push(entry.displayName);
     }
   });
 
-  var desiredHeaders = [TIMESTAMP_HEADER].concat(userHeaders);
+  var desiredHeaders = [TIMESTAMP_HEADER].concat(userHeaders, HONEYPOT_MANAGED_HEADERS);
   var currentKeys = currentHeaders.map(canonicalHeader);
   var desiredKeys = desiredHeaders.map(canonicalHeader);
   var needsRewrite = currentKeys.length !== desiredKeys.length || currentKeys.some(function(key, index) {
@@ -793,6 +880,96 @@ var ensureHoneypotHeaders = function(sheet, entries) {
   var positions = Object.create(null);
   desiredHeaders.forEach(function(header, index) { positions[canonicalHeader(header)] = index; });
   return { headers: desiredHeaders, positions: positions };
+}
+
+var normalizeLegacyHoneypotRows = function(sheet, schema) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  var values = sheet.getRange(2, 1, lastRow - 1, schema.headers.length).getValues();
+  var readIndex = schema.positions[canonicalHeader(HONEYPOT_READ_STATUS_HEADER)];
+  var mailedIndex = schema.positions[canonicalHeader(HONEYPOT_MAILED_STATUS_HEADER)];
+  var changed = false;
+  values.forEach(function(row) {
+    if (!String(row[schema.positions[canonicalHeader(TIMESTAMP_HEADER)]] || "").trim()) return;
+    if (!String(row[readIndex] || "").trim()) {
+      row[readIndex] = HONEYPOT_READ_READ;
+      changed = true;
+    }
+    if (!String(row[mailedIndex] || "").trim()) {
+      row[mailedIndex] = HONEYPOT_MAIL_NOT_REQUIRED;
+      changed = true;
+    }
+  });
+  if (changed) sheet.getRange(2, 1, values.length, schema.headers.length).setValues(values);
+}
+
+var parseHoneypotDeadline = function(value) {
+  if (value instanceof Date && isFinite(value.getTime())) return value.getTime();
+  var text = String(value || "").trim();
+  if (!text) return 0;
+  var parsed = new Date(text).getTime();
+  return isFinite(parsed) ? parsed : 0;
+}
+
+var findActiveHoneypotWindow = function(sheet, schema, now) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return null;
+  var values = sheet.getRange(2, 1, lastRow - 1, schema.headers.length).getValues();
+  var windowIndex = schema.positions[canonicalHeader(HONEYPOT_WINDOW_ID_HEADER)];
+  var deadlineIndex = schema.positions[canonicalHeader(HONEYPOT_WINDOW_DEADLINE_HEADER)];
+  var active = null;
+  values.forEach(function(row) {
+    var id = String(row[windowIndex] || "").trim();
+    var deadlineAt = parseHoneypotDeadline(row[deadlineIndex]);
+    if (!id || deadlineAt <= now) return;
+    if (!active || deadlineAt > active.deadlineAt) active = { id: id, deadlineAt: deadlineAt };
+  });
+  return active;
+}
+
+var applyHoneypotReadValidation = function(sheet, headers) {
+  var columnIndex = -1;
+  headers.forEach(function(header, index) {
+    if (canonicalHeader(header) === canonicalHeader(HONEYPOT_READ_STATUS_HEADER)) columnIndex = index;
+  });
+  if (columnIndex < 0 || !SpreadsheetApp.newDataValidation) return;
+  var rule = SpreadsheetApp.newDataValidation()
+    .requireValueInList([HONEYPOT_READ_UNREAD, HONEYPOT_READ_READ], true)
+    .setAllowInvalid(false)
+    .build();
+  sheet.getRange(2, columnIndex + 1, Math.max(1, sheet.getMaxRows() - 1), 1).setDataValidation(rule);
+}
+
+var readHoneypotRecords = function(sheet) {
+  if (!sheet || sheet.getLastRow() < 2 || !sheet.getLastColumn()) return [];
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, headers.length).getDisplayValues();
+  var positions = Object.create(null);
+  headers.forEach(function(header, index) { positions[canonicalHeader(header)] = index; });
+  var timestampIndex = positions[canonicalHeader(TIMESTAMP_HEADER)];
+  var readIndex = positions[canonicalHeader(HONEYPOT_READ_STATUS_HEADER)];
+  var mailedIndex = positions[canonicalHeader(HONEYPOT_MAILED_STATUS_HEADER)];
+  var windowIndex = positions[canonicalHeader(HONEYPOT_WINDOW_ID_HEADER)];
+  var deadlineIndex = positions[canonicalHeader(HONEYPOT_WINDOW_DEADLINE_HEADER)];
+  return values.map(function(row, offset) {
+    var fields = [];
+    headers.forEach(function(header, index) {
+      var canonical = canonicalHeader(header);
+      if (!header || canonical === canonicalHeader(TIMESTAMP_HEADER) || HONEYPOT_MANAGED_HEADERS.some(function(managed) {
+        return canonical === canonicalHeader(managed);
+      })) return;
+      fields.push({ label: String(header), value: String(row[index] || "") });
+    });
+    return {
+      rowNumber: offset + 2,
+      timestamp: String(row[timestampIndex] || ""),
+      readStatus: String(row[readIndex] || "").trim() || HONEYPOT_READ_READ,
+      mailedStatus: String(row[mailedIndex] || "").trim() || HONEYPOT_MAIL_NOT_REQUIRED,
+      windowId: String(row[windowIndex] || "").trim(),
+      deadlineAt: parseHoneypotDeadline(row[deadlineIndex]),
+      fields: fields
+    };
+  }).filter(function(record) { return record.timestamp; });
 }
 
 /**
@@ -913,7 +1090,15 @@ var updateSiteNotificationStatus = function(sheet, rowNumber, schema, status) {
  * Individual sends are used later so recipients do not see one another.
  */
 var normalizeRecipients = function(configured) {
-  var source = Array.isArray(configured) ? configured : [configured];
+  var rawSource = Array.isArray(configured) ? configured : [configured];
+  var source = [];
+  rawSource.forEach(function(entry) {
+    if (typeof entry === "string") {
+      entry.split(/[,;\n]+/).forEach(function(part) { source.push(part); });
+    } else {
+      source.push(entry);
+    }
+  });
   var valid = [];
   var invalid = [];
   var seen = Object.create(null);
@@ -939,6 +1124,104 @@ var normalizeRecipients = function(configured) {
     valid = valid.slice(0, DEFAULTS.MAX_EMAIL_RECIPIENTS);
   }
   return { valid: valid, invalid: invalid };
+}
+
+var siteConfigEnabled = function(value) {
+  var normalized = String(value === null || typeof value === "undefined" ? "" : value).trim().toLowerCase();
+  return ["false", "0", "no", "disabled", "off"].indexOf(normalized) < 0;
+}
+
+/** Returns site-specific recipients, falling back to the global configuration. */
+var getSiteNotificationRecipients = function(spreadsheet, site) {
+  var fallback = normalizeRecipients(CONFIG.NOTIFICATION_EMAILS);
+  fallback.source = "global_fallback";
+  fallback.configured = false;
+  var sheet = spreadsheet.getSheetByName(SITE_CONFIG_SHEET_NAME);
+  if (!sheet || sheet.getLastRow() < 2) return fallback;
+  var rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, SITE_CONFIG_HEADERS.length).getValues();
+  for (var i = 0; i < rows.length; i++) {
+    var configuredSite = String(rows[i][0] || "").trim();
+    if (!configuredSite) continue;
+    var normalizedSite;
+    try {
+      normalizedSite = normalizeSite(configuredSite);
+    } catch (error) {
+      continue;
+    }
+    if (normalizedSite !== site) continue;
+    if (!siteConfigEnabled(rows[i][2])) {
+      return { valid: [], invalid: [], source: "site_disabled", configured: true };
+    }
+    var selected = normalizeRecipients(rows[i][1]);
+    selected.source = "site_config";
+    selected.configured = true;
+    return selected;
+  }
+  return fallback;
+}
+
+var ensureSiteConfigRow = function(spreadsheet, site) {
+  var sheet = ensureSiteConfigSheet(spreadsheet);
+  var lastRow = sheet.getLastRow();
+  if (lastRow >= 2) {
+    var rows = sheet.getRange(2, 1, lastRow - 1, SITE_CONFIG_HEADERS.length).getValues();
+    var exists = rows.some(function(row) {
+      try { return normalizeSite(row[0]) === site; } catch (error) { return false; }
+    });
+    if (exists) return;
+  }
+  var fallback = normalizeRecipients(CONFIG.NOTIFICATION_EMAILS).valid.join(", ");
+  sheet.appendRow([site, fallback, "TRUE"]);
+}
+
+var siteNameForWorkbookSheet = function(sheet) {
+  if (!sheet || sheet.getName().indexOf(HONEYPOT_SHEET_PREFIX) === 0 || sheet.getName() === SITE_CONFIG_SHEET_NAME) return "";
+  if (Object.keys(SYSTEM_SHEETS).some(function(key) { return SYSTEM_SHEETS[key] === sheet.getName(); })) return "";
+  try { return normalizeSite(sheet.getName()); } catch (error) {}
+  if (sheet.getLastRow() < 2 || !sheet.getLastColumn()) return "";
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var sourceIndex = -1;
+  headers.forEach(function(header, index) {
+    if (canonicalHeader(header) === canonicalHeader(METADATA_HEADERS[2])) sourceIndex = index;
+  });
+  if (sourceIndex < 0) return "";
+  try {
+    return normalizeSite(sheet.getRange(2, sourceIndex + 1).getValues()[0][0]);
+  } catch (error) {
+    return "";
+  }
+}
+
+var ensureSiteConfigRowsForWebsiteSheets = function(spreadsheet) {
+  spreadsheet.getSheets().forEach(function(sheet) {
+    var site = siteNameForWorkbookSheet(sheet);
+    if (site) ensureSiteConfigRow(spreadsheet, site);
+  });
+}
+
+var inspectSiteConfig = function(spreadsheet) {
+  var result = { configuredSiteCount: 0, disabledSiteCount: 0, invalidRows: [], duplicateSites: [] };
+  var sheet = spreadsheet.getSheetByName(SITE_CONFIG_SHEET_NAME);
+  if (!sheet || sheet.getLastRow() < 2) return result;
+  var rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, SITE_CONFIG_HEADERS.length).getValues();
+  var seen = Object.create(null);
+  rows.forEach(function(row, index) {
+    var rawSite = String(row[0] || "").trim();
+    if (!rawSite) return;
+    var site;
+    try {
+      site = normalizeSite(rawSite);
+    } catch (error) {
+      result.invalidRows.push(index + 2);
+      return;
+    }
+    if (seen[site]) result.duplicateSites.push(site);
+    seen[site] = true;
+    result.configuredSiteCount++;
+    if (!siteConfigEnabled(row[2])) result.disabledSiteCount++;
+    if (siteConfigEnabled(row[2]) && !normalizeRecipients(row[1]).valid.length) result.invalidRows.push(index + 2);
+  });
+  return result;
 }
 
 // Queue creation persists enough information to rebuild the notification
@@ -1027,6 +1310,106 @@ var enforceRateLimit = function(site) {
   cache.put(key, JSON.stringify(current), 120);
 }
 
+var getHoneypotSheetLink = function(spreadsheet, sheet) {
+  var baseUrl = "";
+  try {
+    if (spreadsheet && typeof spreadsheet.getUrl === "function") baseUrl = spreadsheet.getUrl();
+  } catch (error) {
+    baseUrl = "";
+  }
+  if (!baseUrl) baseUrl = "https://docs.google.com/spreadsheets/d/" + encodeURIComponent(CONFIG.SPREADSHEET_ID) + "/edit";
+  return baseUrl + "#gid=" + encodeURIComponent(sheet.getSheetId());
+}
+
+var setHoneypotMailStatus = function(sheet, rowNumbers, status) {
+  if (!sheet || !rowNumbers.length) return;
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var statusIndex = -1;
+  headers.forEach(function(header, index) {
+    if (canonicalHeader(header) === canonicalHeader(HONEYPOT_MAILED_STATUS_HEADER)) statusIndex = index;
+  });
+  if (statusIndex < 0) return;
+  rowNumbers.forEach(function(rowNumber) {
+    if (rowNumber >= 2 && rowNumber <= sheet.getLastRow()) sheet.getRange(rowNumber, statusIndex + 1).setValue(status);
+  });
+}
+
+var getUnreadHoneypotSummary = function(spreadsheet, site) {
+  var sheet = spreadsheet.getSheetByName(honeypotTabName(site));
+  if (!sheet) return null;
+  var now = new Date().getTime();
+  var records = readHoneypotRecords(sheet).filter(function(record) {
+    return String(record.readStatus).toLowerCase() !== String(HONEYPOT_READ_READ).toLowerCase() &&
+      record.deadlineAt > now;
+  });
+  return {
+    count: records.length,
+    sheet: sheet,
+    link: getHoneypotSheetLink(spreadsheet, sheet),
+    records: records
+  };
+}
+
+/** Creates one durable queue item per due website/window digest. */
+var enqueueDueHoneypotDigests = function() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(DEFAULTS.LOCK_WAIT_MS)) return 0;
+  try {
+    var spreadsheet = openConfiguredSpreadsheet();
+    restoreRememberedSheetStructures(spreadsheet);
+    var now = new Date().getTime();
+    var queued = 0;
+    spreadsheet.getSheets().forEach(function(sheet) {
+      if (sheet.getName().indexOf(HONEYPOT_SHEET_PREFIX) !== 0) return;
+      var records = readHoneypotRecords(sheet);
+      var groups = Object.create(null);
+      var pendingReadRows = [];
+      records.forEach(function(record) {
+        var isRead = String(record.readStatus).toLowerCase() === String(HONEYPOT_READ_READ).toLowerCase();
+        if (isRead) {
+          if (record.mailedStatus === HONEYPOT_MAIL_PENDING) pendingReadRows.push(record.rowNumber);
+          return;
+        }
+        if (record.deadlineAt <= now && record.windowId && record.mailedStatus === HONEYPOT_MAIL_PENDING) {
+          if (!groups[record.windowId]) groups[record.windowId] = [];
+          groups[record.windowId].push(record);
+        }
+      });
+      setHoneypotMailStatus(sheet, pendingReadRows, HONEYPOT_MAIL_NOT_REQUIRED);
+      Object.keys(groups).forEach(function(windowId) {
+        var group = groups[windowId];
+        var site = honeypotRecordField(group[0], "_site") || sheet.getName().substring(HONEYPOT_SHEET_PREFIX.length);
+        var recipients = getSiteNotificationRecipients(spreadsheet, site);
+        if (!recipients.valid.length || getPendingCount() >= DEFAULTS.MAX_PENDING_NOTIFICATIONS) {
+          setHoneypotMailStatus(sheet, group.map(function(record) { return record.rowNumber; }), HONEYPOT_MAIL_FAILED);
+          safeLog("honeypot_digest_deferred", "site=" + site + " source=" + recipients.source);
+          return;
+        }
+        try {
+          enqueueNotification(spreadsheet, {
+            submissionKey: "honeypot|" + sheet.getName() + "|" + windowId,
+            sheetName: sheet.getName(),
+            sheetRow: group[0].rowNumber,
+            submissionId: windowId,
+            sourceSite: site,
+            recipients: recipients.valid.map(function(email) {
+              return { email: email, kind: "honeypot_digest" };
+            }),
+            createdAt: formatIst(new Date())
+          });
+          setHoneypotMailStatus(sheet, group.map(function(record) { return record.rowNumber; }), HONEYPOT_MAIL_QUEUED);
+          queued++;
+        } catch (error) {
+          safeLog("honeypot_digest_queue_failure", normalizeError(error).code);
+        }
+      });
+    });
+    return queued;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 // The worker claims exactly one recipient at a time, sends without holding a
 // spreadsheet lock, and finalizes the state under a new bounded lock.
 /**
@@ -1036,6 +1419,12 @@ var enforceRateLimit = function(site) {
  */
 function processPendingNotifications(maxItems) {
   cleanupQueueHistory();
+  var honeypotDigestsQueued = 0;
+  try {
+    honeypotDigestsQueued = enqueueDueHoneypotDigests();
+  } catch (honeypotQueueError) {
+    safeLog("honeypot_digest_scan_failure", normalizeError(honeypotQueueError).code);
+  }
   var processed = 0;
   var quotaBlocked = false;
   var startedAt = new Date().getTime();
@@ -1054,13 +1443,17 @@ function processPendingNotifications(maxItems) {
     var outcome = { success: false, error: "" };
     try {
       var email = buildNotificationEmail(claim);
-      MailApp.sendEmail({
-        to: claim.email,
-        subject: email.subject,
-        body: email.body,
-        htmlBody: email.htmlBody,
-        name: DEFAULTS.NOTIFICATION_SENDER_NAME
-      });
+      if (email && email.skipSend) {
+        outcome.skipped = true;
+      } else {
+        MailApp.sendEmail({
+          to: claim.email,
+          subject: email.subject,
+          body: email.body,
+          htmlBody: email.htmlBody,
+          name: DEFAULTS.NOTIFICATION_SENDER_NAME
+        });
+      }
       outcome.success = true;
     } catch (error) {
       outcome.error = safeErrorText(error);
@@ -1068,7 +1461,7 @@ function processPendingNotifications(maxItems) {
     finalizeNotificationClaim(claim, outcome);
     processed++;
   }
-  var result = { processed: processed, quotaBlocked: quotaBlocked };
+  var result = { processed: processed, honeypotDigestsQueued: honeypotDigestsQueued, quotaBlocked: quotaBlocked };
   Logger.log(JSON.stringify(result));
   return result;
 }
@@ -1079,6 +1472,7 @@ var claimNextNotification = function() {
   if (!lock.tryLock(DEFAULTS.LOCK_WAIT_MS)) return null;
   try {
     var spreadsheet = openConfiguredSpreadsheet();
+    restoreRememberedSheetStructures(spreadsheet);
     ensureSystemSheets(spreadsheet);
     var queue = spreadsheet.getSheetByName(SYSTEM_SHEETS.QUEUE);
     var lastRow = queue.getLastRow();
@@ -1166,9 +1560,11 @@ var protectSiteStructure = function(sheet, headers) {
   rememberSheetStructure(sheet, headers, "site");
 };
 
-/** Honeypot tabs have no notification metadata columns, but their headers are locked. */
+/** Honeypot tabs keep review status editable while locking system-managed columns. */
 var protectHoneypotStructure = function(sheet, headers) {
   protectHeaderRow(sheet, headers);
+  protectHoneypotMetadataColumns(sheet, headers);
+  applyHoneypotReadValidation(sheet, headers);
   rememberSheetStructure(sheet, headers, "honeypot");
 };
 
@@ -1179,10 +1575,11 @@ var removeManagedProtection = function(sheet, description) {
 };
 
 /** Prevents manual changes to the header row while allowing the script owner to update it. */
-var protectHeaderRow = function(sheet, headers) {
-  removeManagedProtection(sheet, HEADER_PROTECTION_DESCRIPTION);
+var protectHeaderRow = function(sheet, headers, description) {
+  var protectionDescription = description || HEADER_PROTECTION_DESCRIPTION;
+  removeManagedProtection(sheet, protectionDescription);
   var protection = sheet.getRange(1, 1, 1, headers.length).protect()
-    .setDescription(HEADER_PROTECTION_DESCRIPTION);
+    .setDescription(protectionDescription);
   protection.setWarningOnly(false);
   try {
     var effectiveUser = Session.getEffectiveUser();
@@ -1196,6 +1593,65 @@ var protectHeaderRow = function(sheet, headers) {
   } catch (protectionError) {
     throw appError("header_protection_failed", "The website header row could not be protected.", true);
   }
+};
+
+/** Keeps internal operational sheets read-only to everyone except the script owner. */
+var protectSystemSheet = function(sheet) {
+  var protectionType = SpreadsheetApp.ProtectionType.RANGE;
+  var alreadyProtected = sheet.getProtections(protectionType).some(function(protection) {
+    return String(protection.getDescription() || "") === SYSTEM_SHEET_PROTECTION_DESCRIPTION;
+  });
+  if (alreadyProtected) return;
+  removeManagedProtection(sheet, SYSTEM_SHEET_PROTECTION_DESCRIPTION);
+  var protection = sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).protect()
+    .setDescription(SYSTEM_SHEET_PROTECTION_DESCRIPTION);
+  protection.setWarningOnly(false);
+  try {
+    var effectiveUser = Session.getEffectiveUser();
+    protection.addEditor(effectiveUser);
+    var editors = protection.getEditors();
+    var otherEditors = editors.filter(function(editor) {
+      return editor.getEmail() !== effectiveUser.getEmail();
+    });
+    if (otherEditors.length) protection.removeEditors(otherEditors);
+    if (protection.canDomainEdit()) protection.setDomainEdit(false);
+  } catch (protectionError) {
+    throw appError("system_sheet_protection_failed", "An internal system sheet could not be protected.", true);
+  }
+};
+
+var protectHoneypotMetadataColumns = function(sheet, headers) {
+  var protectionType = SpreadsheetApp.ProtectionType.RANGE;
+  sheet.getProtections(protectionType).forEach(function(protection) {
+    if (String(protection.getDescription() || "").indexOf("FormHarbour honeypot metadata: ") === 0) {
+      protection.remove();
+    }
+  });
+
+  [HONEYPOT_MAILED_STATUS_HEADER, HONEYPOT_WINDOW_ID_HEADER, HONEYPOT_WINDOW_DEADLINE_HEADER].forEach(function(header) {
+    var wanted = canonicalHeader(header);
+    var columnIndex = -1;
+    headers.forEach(function(currentHeader, index) {
+      if (canonicalHeader(currentHeader) === wanted) columnIndex = index;
+    });
+    if (columnIndex < 0) throw appError("honeypot_metadata_protection_failed", "Honeypot status columns could not be protected.", true);
+    var protection = sheet.getRange(columnToLetter(columnIndex + 1) + ":" + columnToLetter(columnIndex + 1))
+      .protect()
+      .setDescription("FormHarbour honeypot metadata: " + header);
+    protection.setWarningOnly(false);
+    try {
+      var effectiveUser = Session.getEffectiveUser();
+      protection.addEditor(effectiveUser);
+      var editors = protection.getEditors();
+      var otherEditors = editors.filter(function(editor) {
+        return editor.getEmail() !== effectiveUser.getEmail();
+      });
+      if (otherEditors.length) protection.removeEditors(otherEditors);
+      if (protection.canDomainEdit()) protection.setDomainEdit(false);
+    } catch (protectionError) {
+      throw appError("honeypot_metadata_protection_failed", "Honeypot status columns could not be protected.", true);
+    }
+  });
 };
 
 /**
@@ -1286,6 +1742,7 @@ var finalizeNotificationClaim = function(claim, outcome) {
   if (!lock.tryLock(DEFAULTS.LOCK_WAIT_MS)) return;
   try {
     var spreadsheet = openConfiguredSpreadsheet();
+    restoreRememberedSheetStructures(spreadsheet);
     var queue = spreadsheet.getSheetByName(SYSTEM_SHEETS.QUEUE);
     if (!queue || claim.queueRow > queue.getLastRow()) {
       releaseQuota(claim.claimToken, false);
@@ -1302,7 +1759,11 @@ var finalizeNotificationClaim = function(claim, outcome) {
       row[13] = formatIst(new Date());
       queue.getRange(claim.queueRow, 1, 1, QUEUE_HEADERS.length).setValues([row]);
       setPendingCount(getPendingCount() - 1);
-      updateSiteNotificationStatusByLocation(spreadsheet, claim.sheetName, claim.sheetRow, "failed");
+      if (claim.recipientKind === "honeypot_digest") {
+        finalizeHoneypotDigestStatuses(spreadsheet, claim.sheetName, claim.submissionId, "failed");
+      } else {
+        updateSiteNotificationStatusByLocation(spreadsheet, claim.sheetName, claim.sheetRow, "failed");
+      }
       releaseQuota(claim.claimToken, false);
       SpreadsheetApp.flush();
       return;
@@ -1343,11 +1804,17 @@ var finalizeNotificationClaim = function(claim, outcome) {
     queue.getRange(claim.queueRow, 1, 1, QUEUE_HEADERS.length).setValues([row]);
     if (isTerminalStates(states)) {
       setPendingCount(getPendingCount() - 1);
-      updateSiteNotificationStatusByLocation(spreadsheet, claim.sheetName, claim.sheetRow, row[7]);
+      if (claim.recipientKind === "honeypot_digest") {
+        finalizeHoneypotDigestStatuses(spreadsheet, claim.sheetName, claim.submissionId, row[7]);
+      } else {
+        updateSiteNotificationStatusByLocation(spreadsheet, claim.sheetName, claim.sheetRow, row[7]);
+      }
     } else {
-      updateSiteNotificationStatusByLocation(spreadsheet, claim.sheetName, claim.sheetRow, row[7]);
+      if (claim.recipientKind !== "honeypot_digest") {
+        updateSiteNotificationStatusByLocation(spreadsheet, claim.sheetName, claim.sheetRow, row[7]);
+      }
     }
-    releaseQuota(claim.claimToken, true);
+    releaseQuota(claim.claimToken, !outcome.skipped);
     SpreadsheetApp.flush();
   } catch (error) {
     safeLog("notification_finalize_failure", normalizeError(error).code);
@@ -1385,6 +1852,55 @@ var retryDelay = function(attempt) {
   return base + Math.floor(Math.random() * Math.min(60 * 1000, base / 4));
 }
 
+var honeypotRecordField = function(record, fieldName) {
+  var wanted = canonicalHeader(fieldName);
+  var field = record.fields.find(function(entry) { return canonicalHeader(entry.label) === wanted; });
+  return field ? field.value : "";
+}
+
+var buildHoneypotDigestEmail = function(claim) {
+  var spreadsheet = openConfiguredSpreadsheet();
+  var sheet = spreadsheet.getSheetByName(claim.sheetName);
+  if (!sheet) throw new Error("honeypot sheet missing");
+  var records = readHoneypotRecords(sheet).filter(function(record) {
+    return record.windowId === claim.submissionId &&
+      String(record.readStatus).toLowerCase() !== String(HONEYPOT_READ_READ).toLowerCase() &&
+      [HONEYPOT_MAIL_PENDING, HONEYPOT_MAIL_QUEUED].indexOf(record.mailedStatus) >= 0;
+  });
+  if (!records.length) return { skipSend: true };
+
+  var site = honeypotRecordField(records[0], "_site") || claim.sourceSite;
+  var sheetLink = getHoneypotSheetLink(spreadsheet, sheet);
+  var lines = [
+    "HONEYPOT REVIEW",
+    "================",
+    "Website: " + site,
+    "Records received: " + records.length,
+    "Review sheet: " + sheetLink,
+    "",
+    "UNREAD RECORDS",
+    "=============="
+  ];
+  var htmlSections = [];
+  records.forEach(function(record, index) {
+    lines.push("", "Record " + (index + 1) + " | Received (IST): " + record.timestamp);
+    record.fields.forEach(function(field) { lines.push(field.label + ": " + (field.value || "(blank)")); });
+    var rows = record.fields.map(function(field) {
+      return "<tr><th style=\"text-align:left;vertical-align:top;padding:8px;border-bottom:1px solid #e5e7eb;color:#374151;width:30%\">" +
+        htmlEscape(field.label) + "</th><td style=\"padding:8px;border-bottom:1px solid #e5e7eb;color:#111827;white-space:pre-wrap;word-break:break-word\">" +
+        htmlEscape(field.value || "(blank)").replace(/\n/g, "<br>") + "</td></tr>";
+    }).join("");
+    htmlSections.push("<section style=\"margin-bottom:22px\"><h3 style=\"margin:0 0 8px;color:#111827\">Record " + (index + 1) + " <span style=\"font-size:13px;font-weight:400;color:#6b7280\">received " + htmlEscape(record.timestamp) + " IST</span></h3><table style=\"width:100%;border-collapse:collapse;border:1px solid #e5e7eb\"><tbody>" + rows + "</tbody></table></section>");
+  });
+  var body = truncate(lines.join("\n"), DEFAULTS.EMAIL_BODY_LIMIT);
+  var htmlBody = "<!doctype html><html><body style=\"margin:0;background:#f3f4f6;font-family:Arial,sans-serif;color:#111827\"><div style=\"max-width:760px;margin:0 auto;padding:24px 14px\"><header style=\"background:#7f1d1d;color:#ffffff;border-radius:10px 10px 0 0;padding:24px\"><div style=\"font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#fecaca\">FormHarbour Review</div><h1 style=\"font-size:25px;line-height:1.25;margin:8px 0 0;color:#ffffff\">Unread honeypot records</h1><h2 style=\"font-size:18px;font-weight:400;margin:8px 0 0;color:#fee2e2\">" + htmlEscape(site) + "</h2></header><div style=\"background:#ffffff;border:1px solid #e5e7eb;border-top:0;border-radius:0 0 10px 10px;padding:24px\"><p style=\"margin-top:0;color:#4b5563\"><strong>" + records.length + "</strong> record(s) are still unread after the five-day review window.</p>" + htmlSections.join("") + "<p style=\"margin:18px 0 0\"><a href=\"" + htmlEscape(sheetLink) + "\">Open the honeypot sheet</a></p><div style=\"font-size:12px;color:#6b7280;margin-top:20px\">Mark each record’s read status as <strong>Read</strong> in the sheet to complete review.</div></div></div></body></html>";
+  return {
+    subject: "Honeypot review | " + truncate(site, 120),
+    body: body,
+    htmlBody: truncate(htmlBody, DEFAULTS.EMAIL_BODY_LIMIT)
+  };
+}
+
 /**
  * Builds a polished plain-text and HTML message from the persisted sheet row.
  * Admin notifications and submitter confirmations share the same complete
@@ -1394,6 +1910,7 @@ var retryDelay = function(attempt) {
  * within email-size limits without silently dropping a field label.
  */
 var buildNotificationEmail = function(claim) {
+  if (claim.recipientKind === "honeypot_digest") return buildHoneypotDigestEmail(claim);
   var spreadsheet = openConfiguredSpreadsheet();
   var sheet = spreadsheet.getSheetByName(claim.sheetName);
   if (!sheet) throw new Error("website sheet missing");
@@ -1459,6 +1976,14 @@ var buildNotificationEmail = function(claim) {
     lines.push("(No user fields were submitted.)");
     htmlRows.push("<tr><td colspan=\"2\" style=\"padding:14px;color:#6b7280\">No user fields were submitted.</td></tr>");
   }
+  var honeypotSummary = !isConfirmation ? getUnreadHoneypotSummary(spreadsheet, claim.sourceSite) : null;
+  var honeypotNote = honeypotSummary && honeypotSummary.count
+    ? honeypotSummary.count + " honeypot record(s) were also received in the last 5 days. View them: " + honeypotSummary.link
+    : "";
+  if (honeypotNote) lines.push("", "HONEYPOT REVIEW", "===============", honeypotNote);
+  var honeypotNoteHtml = honeypotSummary && honeypotSummary.count
+    ? "<div style=\"margin-top:20px;padding:14px;border:1px solid #fcd34d;border-radius:8px;background:#fffbeb;color:#78350f\"><strong>" + honeypotSummary.count + " honeypot record(s) were also received in the last 5 days.</strong> <a href=\"" + htmlEscape(honeypotSummary.link) + "\" style=\"color:#92400e;text-decoration:underline\">View them in the honeypot sheet</a>.</div>"
+    : "";
   var body = truncate(lines.join("\n"), DEFAULTS.EMAIL_BODY_LIMIT);
   var htmlBody = "<!doctype html><html><body style=\"margin:0;background:#f3f4f6;font-family:Arial,sans-serif;color:#111827\">" +
     "<div style=\"max-width:720px;margin:0 auto;padding:24px 14px\">" +
@@ -1478,7 +2003,7 @@ var buildNotificationEmail = function(claim) {
     "</tbody></table>" +
     "<div style=\"font-size:12px;color:#6b7280;margin-top:20px\">" + (isConfirmation
       ? "Your submission was saved by FormHarbour. Keep this email for your records."
-      : "Delivered by FormHarbour. The website name shown above is the submitted hostname routing hint.") + "</div>" +
+      : "Delivered by FormHarbour. The website name shown above is the submitted hostname routing hint.") + "</div>" + honeypotNoteHtml +
     "</div></div></body></html>";
   return {
     subject: (isConfirmation ? "Submission saved | " : "New Form Submission | ") + truncate(claim.sourceSite, 120),
@@ -1572,13 +2097,40 @@ var markQueueRowFailed = function(queue, rowNumber, row, reason) {
   queue.getRange(rowNumber, 1, 1, QUEUE_HEADERS.length).setValues([row]);
 }
 
+var queueRowIsHoneypotDigest = function(row, states) {
+  return String(row[2] || "").indexOf(HONEYPOT_SHEET_PREFIX) === 0 || states.some(function(state) {
+    return state.kind === "honeypot_digest";
+  });
+}
+
+var finalizeHoneypotDigestStatuses = function(spreadsheet, sheetName, windowId, queueStatus) {
+  var sheet = spreadsheet.getSheetByName(sheetName);
+  if (!sheet) return;
+  var records = readHoneypotRecords(sheet).filter(function(record) { return record.windowId === windowId; });
+  var status = queueStatus === "sent" ? HONEYPOT_MAIL_MAILED : HONEYPOT_MAIL_FAILED;
+  var rowNumbers = records.filter(function(record) {
+    if (String(record.readStatus).toLowerCase() === String(HONEYPOT_READ_READ).toLowerCase()) return false;
+    return record.mailedStatus === HONEYPOT_MAIL_QUEUED;
+  }).map(function(record) { return record.rowNumber; });
+  setHoneypotMailStatus(sheet, rowNumbers, status);
+  var readRows = records.filter(function(record) {
+    return String(record.readStatus).toLowerCase() === String(HONEYPOT_READ_READ).toLowerCase() &&
+      record.mailedStatus === HONEYPOT_MAIL_QUEUED;
+  }).map(function(record) { return record.rowNumber; });
+  setHoneypotMailStatus(sheet, readRows, HONEYPOT_MAIL_NOT_REQUIRED);
+}
+
 var finalizeTerminalQueueRow = function(spreadsheet, queue, rowNumber, row, states) {
   row[7] = aggregateQueueStatus(states);
   row[12] = JSON.stringify(states);
   row[13] = formatIst(new Date());
   queue.getRange(rowNumber, 1, 1, QUEUE_HEADERS.length).setValues([row]);
   setPendingCount(getPendingCount() - 1);
-  updateSiteNotificationStatusByLocation(spreadsheet, String(row[2]), Number(row[3]), row[7]);
+  if (queueRowIsHoneypotDigest(row, states)) {
+    finalizeHoneypotDigestStatuses(spreadsheet, String(row[2]), String(row[4]), row[7]);
+  } else {
+    updateSiteNotificationStatusByLocation(spreadsheet, String(row[2]), Number(row[3]), row[7]);
+  }
 }
 
 var updateSiteNotificationStatusByLocation = function(spreadsheet, sheetName, rowNumber, status) {
@@ -1656,7 +2208,28 @@ var restoreRememberedSheetStructures = function(spreadsheet) {
       sheet.getRange(1, 1, 1, expectedHeaders.length).setValues([expectedHeaders]);
     }
     if (expected.kind === "honeypot") {
+      var migratedHoneypotSchema = ensureHoneypotHeaders(sheet, []);
+      normalizeLegacyHoneypotRows(sheet, migratedHoneypotSchema);
+      expectedHeaders = migratedHoneypotSchema.headers;
+      remaining[id].headers = expectedHeaders;
       protectHoneypotStructure(sheet, expectedHeaders);
+    } else if (expected.kind === "config") {
+      protectHeaderRow(sheet, SITE_CONFIG_HEADERS);
+      if (SpreadsheetApp.newDataValidation) {
+        var enabledRule = SpreadsheetApp.newDataValidation()
+          .requireValueInList(["TRUE", "FALSE"], true)
+          .setAllowInvalid(false)
+          .build();
+        sheet.getRange(2, 3, Math.max(1, sheet.getMaxRows() - 1), 1).setDataValidation(enabledRule);
+      }
+      remaining[id].headers = SITE_CONFIG_HEADERS.slice();
+      rememberSheetStructure(sheet, SITE_CONFIG_HEADERS, "config");
+    } else if (expected.kind === "system") {
+      sheet.hideSheet();
+      protectHeaderRow(sheet, expectedHeaders, SYSTEM_HEADER_PROTECTION_DESCRIPTION);
+      protectSystemSheet(sheet);
+      remaining[id].headers = expectedHeaders.slice();
+      rememberSheetStructure(sheet, expectedHeaders, "system");
     } else {
       protectSiteStructure(sheet, expectedHeaders);
     }
@@ -1670,7 +2243,10 @@ var handleSpreadsheetChange = function(e) {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(DEFAULTS.LOCK_WAIT_MS)) return;
   try {
-    restoreRememberedSheetStructures(openConfiguredSpreadsheet());
+    var spreadsheet = openConfiguredSpreadsheet();
+    restoreRememberedSheetStructures(spreadsheet);
+    ensureSystemSheets(spreadsheet);
+    ensureSiteConfigRowsForWebsiteSheets(spreadsheet);
   } catch (error) {
     safeLog("sheet_structure_restore_failure", normalizeError(error).code);
   } finally {
@@ -1683,14 +2259,17 @@ var protectExistingSiteSheets = function(spreadsheet) {
   spreadsheet.getSheets().forEach(function(sheet) {
     if (Object.keys(SYSTEM_SHEETS).some(function(key) {
       return SYSTEM_SHEETS[key] === sheet.getName();
-    })) return;
+    }) || sheet.getName() === SITE_CONFIG_SHEET_NAME) return;
     var lastColumn = sheet.getLastColumn();
     if (!lastColumn) return;
     var headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
     // Honeypot tabs do not have the three normal submission metadata columns,
-    // so identify them by their reserved tab-name prefix and lock only headers.
+    // so identify them by their reserved tab-name prefix and add the review
+    // columns before applying their protections.
     if (sheet.getName().indexOf(HONEYPOT_SHEET_PREFIX) === 0) {
-      protectHoneypotStructure(sheet, headers);
+      var honeypotSchema = ensureHoneypotHeaders(sheet, []);
+      normalizeLegacyHoneypotRows(sheet, honeypotSchema);
+      protectHoneypotStructure(sheet, honeypotSchema.headers);
       return;
     }
     var hasReservedMetadata = PROTECTED_METADATA_HEADERS.some(function(header) {
@@ -1730,7 +2309,15 @@ function setup() {
   }
   try {
     var spreadsheet = openConfiguredSpreadsheet();
+    restoreRememberedSheetStructures(spreadsheet);
     ensureSystemSheets(spreadsheet);
+    ensureSiteConfigRowsForWebsiteSheets(spreadsheet);
+    var siteConfig = inspectSiteConfig(spreadsheet);
+    diagnostics.configuredSiteCount = siteConfig.configuredSiteCount;
+    diagnostics.disabledSiteCount = siteConfig.disabledSiteCount;
+    diagnostics.invalidSiteConfigRows = siteConfig.invalidRows;
+    if (siteConfig.invalidRows.length) diagnostics.warnings.push("Some site configuration rows have invalid sites or recipients.");
+    if (siteConfig.duplicateSites.length) diagnostics.warnings.push("Duplicate site configuration rows exist for: " + siteConfig.duplicateSites.join(", "));
     protectExistingSiteSheets(spreadsheet);
     ensureStructureTrigger(spreadsheet);
     recalculatePendingCount(spreadsheet);
@@ -1819,7 +2406,9 @@ function checkSystemHealth() {
   }
   try {
     var spreadsheet = openConfiguredSpreadsheet();
+    restoreRememberedSheetStructures(spreadsheet);
     ensureSystemSheets(spreadsheet);
+    var siteConfig = inspectSiteConfig(spreadsheet);
     recalculatePendingCount(spreadsheet);
     var recipients = normalizeRecipients(CONFIG.NOTIFICATION_EMAILS);
     var queue = spreadsheet.getSheetByName(SYSTEM_SHEETS.QUEUE);
@@ -1853,6 +2442,12 @@ function checkSystemHealth() {
     health.queueStatusCounts = counts;
     health.validRecipientCount = recipients.valid.length;
     health.invalidRecipientCount = recipients.invalid.length;
+    health.configuredSiteCount = siteConfig.configuredSiteCount;
+    health.disabledSiteCount = siteConfig.disabledSiteCount;
+    health.invalidSiteConfigRows = siteConfig.invalidRows;
+    health.duplicateSiteConfigSites = siteConfig.duplicateSites;
+    if (siteConfig.invalidRows.length) health.warnings.push("Some site configuration rows have invalid sites or recipients.");
+    if (siteConfig.duplicateSites.length) health.warnings.push("Duplicate site configuration rows exist.");
     health.remainingEmailRecipientQuota = remaining;
     health.triggerCount = triggers.length;
     health.structureTriggerCount = structureTriggers.length;
@@ -1906,6 +2501,7 @@ var cleanupQueueHistory = function() {
     var lastCleanup = Number(properties.getProperty("__FH_LAST_QUEUE_CLEANUP") || 0);
     if (now - lastCleanup < 24 * 60 * 60 * 1000) return;
     var spreadsheet = openConfiguredSpreadsheet();
+    restoreRememberedSheetStructures(spreadsheet);
     var queue = spreadsheet.getSheetByName(SYSTEM_SHEETS.QUEUE);
     if (!queue || queue.getLastRow() < 2) {
       properties.setProperty("__FH_LAST_QUEUE_CLEANUP", String(now));

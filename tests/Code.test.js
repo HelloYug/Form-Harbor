@@ -42,6 +42,17 @@ class MockRange {
     return this;
   }
 
+  setDataValidation(rule) {
+    this.sheet.dataValidations.push({
+      row: this.row,
+      column: this.column,
+      rowCount: this.rowCount,
+      columnCount: this.columnCount,
+      rule
+    });
+    return this;
+  }
+
   clearContent() {
     this.sheet.clear(this.row, this.column, this.rowCount, this.columnCount);
     return this;
@@ -115,6 +126,7 @@ class MockSheet {
     this.grid = rows.map((row) => row.slice());
     this.hidden = false;
     this.protections = [];
+    this.dataValidations = [];
   }
 
   getName() {
@@ -148,6 +160,10 @@ class MockSheet {
     const lastRow = this.getLastRow();
     if (!lastRow) return 0;
     return this.grid.slice(0, lastRow).reduce((width, row) => Math.max(width, row.length), 0);
+  }
+
+  getMaxRows() {
+    return Math.max(1000, this.grid.length);
   }
 
   getMaxColumns() {
@@ -242,6 +258,7 @@ class MockSpreadsheet {
     this.nextSheetId = 2;
     this.sheets = new Map();
     this.sheets.set("Sheet1", new MockSheet("Sheet1", [], 1, this));
+    this.activeSheet = this.sheets.get("Sheet1");
   }
 
   getName() {
@@ -265,6 +282,18 @@ class MockSpreadsheet {
     const sheet = new MockSheet(name, [], this.nextSheetId++, this);
     this.sheets.set(name, sheet);
     return sheet;
+  }
+
+  setActiveSheet(sheet) {
+    this.activeSheet = sheet;
+    return sheet;
+  }
+
+  moveActiveSheet(position) {
+    const sheets = Array.from(this.sheets.values()).filter((sheet) => sheet !== this.activeSheet);
+    const index = Math.max(0, Math.min(sheets.length, Number(position) - 1));
+    sheets.splice(index, 0, this.activeSheet);
+    this.sheets = new Map(sheets.map((sheet) => [sheet.getName(), sheet]));
   }
 }
 
@@ -315,6 +344,23 @@ function makeHarness({
   const context = {
     SpreadsheetApp: {
       ProtectionType: { RANGE: "RANGE" },
+      newDataValidation() {
+        const rule = { values: [], showDropdown: true, allowInvalid: true };
+        return {
+          requireValueInList(values, showDropdown) {
+            rule.values = values.slice();
+            rule.showDropdown = showDropdown;
+            return this;
+          },
+          setAllowInvalid(allowInvalid) {
+            rule.allowInvalid = allowInvalid;
+            return this;
+          },
+          build() {
+            return rule;
+          }
+        };
+      },
       openById(id) {
         if (id !== "test-spreadsheet") throw new Error("unknown spreadsheet");
         return spreadsheet;
@@ -503,10 +549,50 @@ test("setup is idempotent and initializes protected system sheets", () => {
   assert.equal(first.ok, true);
   assert.equal(second.ok, true);
   assert.equal(harness.triggers.length, 2);
+  const config = harness.spreadsheet.getSheetByName("__FH_SITE_CONFIG");
+  assert.ok(config);
+  assert.equal(harness.spreadsheet.getSheets()[0].getName(), "__FH_SITE_CONFIG");
+  assert.equal(config.isSheetHidden(), false);
+  assert.deepEqual(config.getRange(1, 1, 1, 3).getValues()[0], ["site", "notification_emails", "enabled"]);
   assert.equal(harness.triggers.find((trigger) => trigger.handler === "processPendingNotifications").interval, 1);
   assert.ok(harness.spreadsheet.getSheetByName("__FH_QUEUE").isSheetHidden());
   assert.ok(harness.spreadsheet.getSheetByName("__FH_INDEX").isSheetHidden());
+  ["__FH_QUEUE", "__FH_INDEX", "__FH_LOG"].forEach((name) => {
+    const systemSheet = harness.spreadsheet.getSheetByName(name);
+    const headerProtection = systemSheet.getProtections().find(
+      (protection) => protection.getDescription() === "FormHarbour locked system header row"
+    );
+    const sheetProtection = systemSheet.getProtections().find(
+      (protection) => protection.getDescription() === "FormHarbour locked system sheet"
+    );
+    assert.ok(headerProtection, "Expected protected system header for " + name);
+    assert.ok(sheetProtection, "Expected protected system sheet for " + name);
+    assert.equal(headerProtection.warningOnly, false);
+    assert.equal(sheetProtection.warningOnly, false);
+  });
   assert.equal(second.invalidRecipients.length, 1);
+});
+
+test("restores renamed system and configuration sheets", () => {
+  const harness = makeHarness();
+  harness.context.setup();
+  harness.spreadsheet.getSheetByName("__FH_QUEUE").setName("renamed queue");
+  harness.spreadsheet.getSheetByName("__FH_INDEX").setName("renamed index");
+  harness.spreadsheet.getSheetByName("__FH_LOG").setName("renamed log");
+  harness.spreadsheet.getSheetByName("__FH_SITE_CONFIG").setName("renamed config");
+
+  harness.context.handleSpreadsheetChange({ changeType: "OTHER" });
+
+  assert.ok(harness.spreadsheet.getSheetByName("__FH_QUEUE"));
+  assert.ok(harness.spreadsheet.getSheetByName("__FH_INDEX"));
+  assert.ok(harness.spreadsheet.getSheetByName("__FH_LOG"));
+  assert.ok(harness.spreadsheet.getSheetByName("__FH_SITE_CONFIG"));
+  assert.equal(harness.spreadsheet.getSheets()[0].getName(), "__FH_SITE_CONFIG");
+  assert.equal(harness.spreadsheet.getSheetByName("__FH_QUEUE").isSheetHidden(), true);
+
+  harness.spreadsheet.getSheetByName("__FH_QUEUE").setName("queue renamed again");
+  harness.context.processPendingNotifications(1);
+  assert.ok(harness.spreadsheet.getSheetByName("__FH_QUEUE"));
 });
 
 test("accepts repeated form keys, preserves blanks, creates Google Forms-style headers, and queues recipients", () => {
@@ -557,6 +643,46 @@ test("accepts repeated form keys, preserves blanks, creates Google Forms-style h
 
   const states = JSON.parse(queueRows(harness)[0][12]);
   assert.deepEqual(states.map((state) => state.email), ["admin@example.com", "owner@example.com"]);
+});
+
+test("routes notifications by website configuration with global fallback", () => {
+  const harness = makeHarness({ recipients: ["fallback@example.com"] });
+  harness.context.setup();
+  const config = harness.spreadsheet.getSheetByName("__FH_SITE_CONFIG");
+  config.getRange(2, 1, 3, 3).setValues([
+    ["site-a.com", "a@example.com, b@example.com", "TRUE"],
+    ["site-b.com", "c@example.com; d@example.com\nf@example.com", "TRUE"],
+    ["site-disabled.com", "disabled@example.com", "FALSE"]
+  ]);
+
+  harness.postForm({ _site: "site-a.com", _submission_id: "site-a-1", name: "A" });
+  harness.postForm({ _site: "site-b.com", _submission_id: "site-b-1", name: "B" });
+  harness.postForm({ _site: "site-c.com", _submission_id: "site-c-1", name: "C" });
+  const disabledResponse = harness.postForm({ _site: "site-disabled.com", _submission_id: "site-disabled-1", name: "Disabled" });
+
+  assert.equal(disabledResponse.notificationStatus, "no_valid_recipients");
+  assert.deepEqual(
+    harness.mail.sentMail.map((mail) => mail.to),
+    ["a@example.com", "b@example.com", "c@example.com", "d@example.com", "f@example.com", "fallback@example.com"]
+  );
+});
+
+test("automatically adds new website sheets to site configuration", () => {
+  const harness = makeHarness({ recipients: ["fallback@example.com"] });
+  harness.postForm({ _site: "created.example.com", _submission_id: "created-1", name: "Created" });
+  const config = harness.spreadsheet.getSheetByName("__FH_SITE_CONFIG");
+  assert.deepEqual(Array.from(config.getRange(2, 1, 1, 3).getValues()[0]), [
+    "created.example.com",
+    "fallback@example.com",
+    "TRUE"
+  ]);
+
+  harness.spreadsheet.insertSheet("manual.example.com");
+  harness.context.handleSpreadsheetChange({ changeType: "INSERT_GRID" });
+  const configuredSites = Array.from(config.getRange(2, 1, config.getLastRow() - 1, 1).getValues()).map((row) => row[0]);
+  assert.deepEqual(configuredSites, ["created.example.com", "manual.example.com"]);
+  assert.equal(config.getRange(3, 2).getValues()[0][0], "fallback@example.com");
+  assert.equal(harness.spreadsheet.getSheets()[0].getName(), "__FH_SITE_CONFIG");
 });
 
 test("evolves schema before operational columns and preserves previous row alignment", () => {
@@ -648,7 +774,7 @@ test("restores renamed honeypot tabs and edited capture headers", () => {
   const restored = harness.spreadsheet.getSheetByName("honeypot - example.com");
   assert.ok(restored);
   assert.equal(restored.getRange(1, 2).getValues()[0][0], "_site");
-  assert.equal(restored.getProtections().length, 1);
+  assert.equal(restored.getProtections().length, 4);
 });
 
 test("deduplicates identical retries and rejects suspicious ID reuse", () => {
@@ -697,13 +823,93 @@ test("rejects malformed, unsupported, missing-site, honeypot, and reserved-field
   assert.ok(honeypotSheet, "Expected a separate honeypot capture sheet");
   assert.deepEqual(
     honeypotSheet.getRange(1, 1, 1, honeypotSheet.getLastColumn()).getValues()[0],
-    ["Timestamp", "_site", "_submission_id", "_honeypot", "name", "email"]
+    [
+      "Timestamp",
+      "_site",
+      "_submission_id",
+      "_honeypot",
+      "name",
+      "email",
+      "__fh_honeypot_read_status",
+      "__fh_honeypot_mailed_status",
+      "__fh_honeypot_window_id",
+      "__fh_honeypot_window_deadline"
+    ]
   );
   const capturedRow = honeypotSheet.getRange(2, 1, 1, 6).getValues()[0];
   assert.ok(capturedRow[0]);
   assert.deepEqual(capturedRow.slice(1), ["example.com", "spam-1", "filled", "Bot", "bot@example.com"]);
-  assert.equal(honeypotSheet.getProtections().length, 1);
+  assert.equal(honeypotSheet.getProtections().length, 4);
+  assert.ok(honeypotSheet.dataValidations.length > 0);
   assert.equal(harness.postForm({ _site: "example.com", Timestamp: "spoofed" }).code, "reserved_field_name");
+});
+
+test("tracks honeypot read status and adds unread review context to genuine mail", () => {
+  const harness = makeHarness({ recipients: ["admin@example.com"] });
+  harness.postForm({
+    _site: "example.com",
+    _submission_id: "honeypot-read-test",
+    _honeypot: "filled",
+    name: "Bot"
+  });
+  const honeypotSheet = harness.spreadsheet.getSheetByName("honeypot - example.com");
+  const headers = honeypotSheet.getRange(1, 1, 1, honeypotSheet.getLastColumn()).getValues()[0];
+  const readColumn = headers.indexOf("__fh_honeypot_read_status") + 1;
+  const mailedColumn = headers.indexOf("__fh_honeypot_mailed_status") + 1;
+  assert.equal(honeypotSheet.getRange(2, readColumn).getValues()[0][0], "Unread");
+  assert.equal(honeypotSheet.getRange(2, mailedColumn).getValues()[0][0], "Pending");
+  assert.deepEqual(Array.from(honeypotSheet.dataValidations[0].rule.values), ["Unread", "Read"]);
+
+  harness.postForm({
+    _site: "example.com",
+    _submission_id: "genuine-during-review-window",
+    name: "Ada",
+    message: "Hello"
+  });
+  assert.equal(harness.mail.sentMail.length, 1);
+  assert.match(harness.mail.sentMail[0].body, /honeypot record\(s\) were also received in the last 5 days/);
+  assert.match(harness.mail.sentMail[0].body, /View them:/);
+  assert.match(harness.mail.sentMail[0].htmlBody, /View them in the honeypot sheet/);
+
+  honeypotSheet.getRange(2, readColumn).setValue("Read");
+  harness.context.processPendingNotifications();
+  assert.equal(harness.mail.sentMail.length, 1);
+  assert.equal(honeypotSheet.getRange(2, mailedColumn).getValues()[0][0], "Not required");
+});
+
+test("combines unread honeypots into one mailed digest after five days", () => {
+  const harness = makeHarness({ recipients: ["admin@example.com"] });
+  harness.postForm({
+    _site: "example.com",
+    _submission_id: "honeypot-digest-1",
+    _honeypot: "filled",
+    name: "Bot One"
+  });
+  harness.postForm({
+    _site: "example.com",
+    _submission_id: "honeypot-digest-2",
+    _honeypot: "filled",
+    name: "Bot Two"
+  });
+
+  const honeypotSheet = harness.spreadsheet.getSheetByName("honeypot - example.com");
+  const headers = honeypotSheet.getRange(1, 1, 1, honeypotSheet.getLastColumn()).getValues()[0];
+  const deadlineColumn = headers.indexOf("__fh_honeypot_window_deadline") + 1;
+  const mailedColumn = headers.indexOf("__fh_honeypot_mailed_status") + 1;
+  const expired = new Date(Date.now() - 1000).toISOString();
+  honeypotSheet.getRange(2, deadlineColumn, 2, 1).setValues([[expired], [expired]]);
+
+  const result = harness.context.processPendingNotifications();
+  assert.equal(result.quotaBlocked, false);
+  assert.equal(result.honeypotDigestsQueued, 1);
+  assert.equal(harness.mail.sentMail.length, 1);
+  assert.match(harness.mail.sentMail[0].subject, /Honeypot review \| example\.com/);
+  assert.match(harness.mail.sentMail[0].body, /Records received: 2/);
+  assert.match(harness.mail.sentMail[0].body, /Bot One/);
+  assert.match(harness.mail.sentMail[0].body, /Bot Two/);
+  assert.match(harness.mail.sentMail[0].htmlBody, /Open the honeypot sheet/);
+  assert.equal(honeypotSheet.getRange(2, mailedColumn).getValues()[0][0], "Mailed");
+  assert.equal(honeypotSheet.getRange(3, mailedColumn).getValues()[0][0], "Mailed");
 });
 
 test("escapes formula-shaped values before writing Sheets", () => {

@@ -18,12 +18,15 @@ Use this prompt when asking an AI tool or developer to connect another website f
 ~~~text
 Integrate this already-built website form with the FormHarbour Google Apps Script
 Web App without rebuilding its visible fields, styling, or validation. Keep the
-visible field order unchanged. Add hidden _site, _submission_id, and _honeypot controls.
+visible field order unchanged because it becomes the initial Google Sheet column
+order. Add hidden _site, _submission_id, and _honeypot controls.
 Set _site to the exact browser hostname without https://, a port, a path, or a
 full URL. Generate one submission ID per deliberate submission and reuse that
 same ID if the request is retried. Submit to the deployed /exec URL, show a
 frontend saved-status message only when SHOW_CONFIRMATION_NOTIFICATION is true,
-and never expose admin notification addresses in browser code.
+and never expose admin notification addresses in browser code. Do not use
+Timestamp, _site, _submission_id, _honeypot, __fh_submission_id,
+__fh_source_site, or __fh_notification_status as ordinary user-field names.
 ~~~
 
 ## 1. 🔗 Connect the form endpoint
@@ -89,6 +92,8 @@ document.getElementById("form-site").value = getFormHarbourSite();
 ~~~
 
 The backend normalizes one leading www. and creates the website tab from the hostname. Never use a value such as https://example.com/contact.
+
+The hostname is a routing hint, not authentication. A public browser can spoof it, so use a trusted server-side proxy or authenticated integration if the endpoint must accept submissions only from an authorized origin.
 
 ## 3. 🆔 Generate a duplicate-safe submission ID
 
@@ -286,3 +291,36 @@ fetch("PASTE_YOUR_EXEC_URL_HERE", {
 ~~~
 
 Do not place NOTIFICATION_EMAILS or other admin-only settings in frontend code.
+
+## 8. 🔁 Handle response statuses and safe retries
+
+Prompt:
+
+~~~text
+Handle FormHarbour's JSON response using the status and code fields. Treat
+accepted and duplicate as completed outcomes. Treat retryable as a temporary
+failure and retry later with the same _submission_id and exponential backoff.
+Treat rejected as a user or validation problem that must not be blindly retried.
+If the browser cannot read a cross-origin response, keep the same ID and ask the
+user to verify the Sheet before submitting again.
+~~~
+
+Reference logic:
+
+~~~javascript
+function handleFormHarbourResult(result) {
+  if (result.status === "accepted" || result.status === "duplicate") {
+    return { kind: "success", message: result.status === "duplicate"
+      ? "This submission was already saved."
+      : "Your data was saved successfully." };
+  }
+  if (result.status === "retryable") {
+    return { kind: "retry", message: "Temporary issue. Retry shortly with the same submission ID." };
+  }
+  return { kind: "error", message: result.message || "The submission was not accepted." };
+}
+~~~
+
+Common retryable codes include `lock_unavailable`, `rate_limited`, and `site_capacity`. The backend allows up to 30 requests per normalized hostname in a 60-second best-effort window. Do not loop rapidly when `rate_limited` is returned. A duplicate response means the original request was already accepted, so do not generate a new ID.
+
+The backend persists the Sheet row before attempting email. `notificationStatus: "queued"` or `"processing"` describes delivery work only; it does not mean the form data failed to save. The local test client keeps the same ID across network and response-reading failures for this reason.

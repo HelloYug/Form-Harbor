@@ -15,7 +15,7 @@ You will have:
 - One tab per normalized website hostname.
 - One separate local test website in test-form/.
 
-The public browser form sends data to the Web App. The script writes the row first, then queues individual email notifications. The queue worker runs automatically every minute as a recovery path.
+The public browser form sends data to the Web App. The script writes the row first, then queues individual email notifications. Honeypot captures remain isolated and are grouped into one unread-review digest after five days unless marked read. The queue worker runs automatically every minute as a recovery path.
 
 ## 2. 📊 Create the Google Spreadsheet
 
@@ -41,24 +41,18 @@ The Spreadsheet ID is only the text between /d/ and /edit:
 
 Copy only that ID. Do not paste the complete URL, /edit suffix, #gid value, spaces, or quotation marks into Code.gs.
 
-## 3. 🧩 Create the Apps Script project
+## 3. 🧩 Create a standalone Apps Script project
 
-You can create a standalone project or open Apps Script from the spreadsheet.
-
-### Recommended: standalone project
+FormHarbour uses a separate, standalone Google Apps Script project. The backend
+connects to the destination spreadsheet through `CONFIG.SPREADSHEET_ID`.
 
 1. Visit https://script.google.com/.
 2. Choose **New project**.
 3. Rename the project to FormHarbour Backend.
 4. Open the default script file, usually Code.gs.
 
-### Alternative: from the spreadsheet
-
-1. Open the spreadsheet.
-2. Choose **Extensions → Apps Script**.
-3. Rename the project to FormHarbour Backend.
-
-Both options work because the backend opens the configured spreadsheet by ID. A standalone project is easier to move between spreadsheets later.
+Keep this project separate from the spreadsheet. The spreadsheet is only the
+configured data destination.
 
 ## 4. 💻 Add the backend code
 
@@ -130,6 +124,42 @@ The backend trims whitespace, removes duplicate addresses case-insensitively, ex
 
 Do not add recipient addresses to browser JavaScript. They belong only in Code.gs.
 
+### Per-site notification routing
+
+Run `setup()` once. It creates a visible `__FH_SITE_CONFIG` tab in the same workbook and keeps it as the first sheet tab. Add one row per normalized website hostname:
+
+| site | notification_emails | enabled |
+|---|---|---|
+| `site-a.com` | `a@example.com, b@example.com, c@example.com` | `TRUE` |
+| `site-b.com` | `c@example.com; d@example.com; f@example.com` | `TRUE` |
+
+Rules:
+
+- Use only the hostname: no `https://`, path, or port.
+- Separate recipient addresses with commas, semicolons, or new lines.
+- Set `enabled` to `FALSE` to store submissions without sending admin notifications for that site.
+- A configured site row overrides the global `CONFIG.NOTIFICATION_EMAILS` list.
+- A site without a row uses the global list as a backward-compatible fallback.
+- The recipient list is captured when the submission is queued; editing the config later affects new submissions, not already-queued mail.
+- Honeypot review digests use the same per-site recipient routing.
+
+The site configuration header is protected. Keep one row per hostname; duplicate rows are reported by `checkSystemHealth()` and the first matching row is used.
+
+On a brand-new workbook with no website tab, the sheet contains only the header:
+
+| site | notification_emails | enabled |
+|---|---|---|
+
+There are no data rows below this header until a hostname tab is detected or a submission creates one.
+
+The global `CONFIG.NOTIFICATION_EMAILS` list remains the fallback; it is not copied into a blank placeholder row. When the first normal website submission creates a hostname tab, FormHarbour automatically adds that hostname to `__FH_SITE_CONFIG` with the current global recipients and `TRUE`. A manually created hostname-named website tab is also registered by the spreadsheet-change trigger. A honeypot-only submission creates only its separate review tab and continues using the global fallback until a site row is added. Existing rows are never overwritten, so edit the row to assign site-specific recipients.
+
+The `enabled` column uses a `TRUE`/`FALSE` dropdown. `FALSE` stores the submission but disables admin and honeypot-digest notifications for that site. Changing the row affects new submissions and newly queued digest work; recipients already captured in the durable queue are not rewritten.
+
+### Managed sheet names
+
+FormHarbour manages the names and header structures of all tabs it creates: `__FH_SITE_CONFIG`, `__FH_QUEUE`, `__FH_INDEX`, `__FH_LOG`, website hostname tabs, and `honeypot - sitename` tabs. Website, honeypot, and configuration headers are protected, and the hidden queue/index/log sheets are fully protected from non-owner manual edits. The Apps Script owner remains an editor so the backend can update them. If an authorized editor renames one of these tabs or edits a managed header row, the spreadsheet-change trigger restores the expected name and headers by stable sheet ID. Queue workers also reconcile managed structures before processing, so a delayed change trigger does not make the worker use a newly created duplicate system tab. The trigger also keeps `__FH_SITE_CONFIG` as the first tab. Do not delete managed tabs: a deleted tab can be recreated, but its historical data cannot be reconstructed automatically.
+
 ### SEND_CONFIRMATION_EMAILS
 
 Set this boolean to control submitter confirmation email delivery. The shipped default is `false`:
@@ -152,7 +182,7 @@ The setting controls field names, not recipient addresses. If the configured fie
 
 ### What you do not configure
 
-You do not register website names, create spreadsheet tabs, list form field names, create triggers, or configure email templates manually. Website tabs and columns are created automatically.
+You do not manually create website tabs, list form field names, create triggers, or configure email templates. Website tabs and columns are created automatically. Site-specific recipients are managed in `__FH_SITE_CONFIG` when needed.
 
 ## 6. 🔐 Authorize the Apps Script project
 
@@ -179,11 +209,11 @@ Apps Script determines many scopes by scanning the code. If you later add a serv
 After successful authorization, setup():
 
 - Validates the Spreadsheet ID.
-- Creates hidden __FH_QUEUE, __FH_INDEX, and __FH_LOG tabs.
+- Creates hidden __FH_QUEUE, __FH_INDEX, and __FH_LOG tabs plus the visible __FH_SITE_CONFIG routing tab.
 - Normalizes notification recipients.
 - Sets the spreadsheet timezone to Asia/Kolkata when permitted.
-- Creates one processPendingNotifications trigger every minute.
-- Creates one spreadsheet-change trigger that restores website tab names and header rows if they are edited.
+- Creates one processPendingNotifications time-driven trigger every minute.
+- Creates one spreadsheet-change trigger that restores managed tab names, managed header rows, and the first-tab position if they are edited.
 - Avoids duplicate triggers when setup() is run again.
 
 The script does not automatically deploy the Web App. Deployment remains a manual Apps Script editor step.
@@ -347,6 +377,7 @@ The complete copy-ready prompt and code recipes are in [FRONTEND_INTEGRATION.md]
 5. [Show a frontend data-saved notification](FRONTEND_INTEGRATION.md#5-show-a-frontend-data-saved-notification)
 6. [Enable the saved-data confirmation email](FRONTEND_INTEGRATION.md#6-enable-the-saved-data-confirmation-email)
 7. [Use JSON from a same-origin or compatible client](FRONTEND_INTEGRATION.md#7-use-json-from-a-same-origin-or-compatible-client)
+8. [Handle response statuses and safe retries](FRONTEND_INTEGRATION.md#8-handle-response-statuses-and-safe-retries)
 
 The recipes also explain which settings belong in frontend code and which must remain private in Code.gs.
 
@@ -359,7 +390,7 @@ The recipes also explain which settings belong in frontend code and which must r
 - Do not put https://, a port, a path, or a full page URL in _site.
 - If JavaScript is unavailable, set _site manually to the hostname only.
 
-No field registration is needed. Any new form control becomes a new column for that website on the next accepted submission.
+No field registration is needed. Any new form control becomes a new column for that website on the next accepted submission. `Timestamp`, `_site`, `_submission_id`, `_honeypot`, `__fh_submission_id`, `__fh_source_site`, and `__fh_notification_status` are reserved names and cannot be used as ordinary user fields.
 
 ### Programmatic JSON clients
 
@@ -380,6 +411,20 @@ fetch("PASTE_YOUR_EXEC_URL_HERE", {
 ~~~
 
 Apps Script Web Apps do not provide arbitrary response headers, custom status-code control, or a general doOptions() CORS handler. A cross-origin fetch may therefore be unable to read the response even when the server received the POST. Native form navigation or a same-origin server-side proxy is more reliable when response-readable CORS is required.
+
+### Response contract
+
+Clients should inspect the JSON body rather than relying only on the HTTP status:
+
+| `status` | Common `code` | Meaning |
+|---|---|---|
+| `accepted` | `stored` | The row was saved; notification work may be `queued`, `processing`, or deferred. |
+| `duplicate` | `already_accepted` | The same submission ID and payload were already accepted; keep the same ID and do not create another row. |
+| `rejected` | `spam_rejected`, `submission_id_reused`, `invalid_site`, or validation code | The request was not accepted and should not be blindly retried. |
+| `retryable` | `lock_unavailable`, `rate_limited`, `site_capacity`, or temporary service code | Keep the same submission ID and retry later with backoff. |
+| `failed` | `unexpected_error` or storage failure code | Inspect Apps Script logs and `checkSystemHealth()` before retrying. |
+
+An accepted response can initially report `notificationStatus: "processing"` because FormHarbour attempts up to five recipients immediately after persistence. A queued or deferred notification does not mean the submitted row was lost.
 
 ## 11. 📋 Expected spreadsheet result
 
@@ -404,9 +449,11 @@ If a field is missing from a later submission, its cell remains blank. If a new 
 
 ### Honeypot captures
 
-If `_honeypot` is present and contains a non-blank value, FormHarbour rejects the request as spam and does not write it to the normal website tab or notification queue. For review, it creates or reuses a separate tab named `honeypot - sitename`, for example `honeypot - example.com`.
+If `_honeypot` is present and contains a non-blank value, FormHarbour rejects the request as spam and does not write it to the normal website tab. For review, it creates or reuses a separate tab named `honeypot - sitename`, for example `honeypot - example.com`.
 
-The honeypot tab uses `Timestamp` as its first column and then stores the received fields in their original order, including `_site`, `_submission_id`, and `_honeypot`. Its header row is protected and the tab name/header structure is restored by the same spreadsheet-change trigger used for website tabs. Honeypot captures still follow the request-size, field-size, rate-limit, and sheet-creation limits.
+The honeypot tab uses `Timestamp` as its first column and then stores the received fields in their original order, including `_site`, `_submission_id`, and `_honeypot`. It also adds protected `__fh_honeypot_mailed_status`, `__fh_honeypot_window_id`, and `__fh_honeypot_window_deadline` columns plus an editable `__fh_honeypot_read_status` column with an `Unread`/`Read` chip dropdown for every record. Its header row and system-managed columns are protected, and the tab name/header structure is restored by the same spreadsheet-change trigger used for website tabs. Honeypot captures still follow the request-size, field-size, rate-limit, and sheet-creation limits.
+
+The first honeypot record for a website starts a five-day review window. Additional records for that website during the window are grouped with it. Marking records as `Read` within the window prevents a honeypot email. If unread records remain at the deadline, the queue sends one combined digest for that website/window and updates their mailed status. Genuine submission emails sent during an active window include the current unread honeypot count and a link to the honeypot sheet.
 
 #### Test the honeypot safely
 
@@ -416,7 +463,7 @@ From PowerShell, replace the URL below with the `/exec` URL in `test-form/config
 
 ~~~powershell
 $body = @{
-  _site = 'test.msduu.com'
+  _site = 'test.example.com'
   _submission_id = "honeypot-test-$([guid]::NewGuid())"
   _honeypot = 'formharbour-honeypot-test'
   name = 'Honeypot Test'
@@ -439,14 +486,15 @@ Expected response fields include:
 
 Then verify that:
 
-1. A `honeypot - test.msduu.com` tab contains the test row.
-2. The normal `test.msduu.com` tab does not contain that row.
-3. No notification email was sent for the honeypot request.
-4. `checkSystemHealth()` still reports no pending notification caused by this test.
+1. A `honeypot - test.example.com` tab contains the test row.
+2. The normal `test.example.com` tab does not contain that row.
+3. No immediate notification email was sent for the honeypot request.
+4. Mark the row’s read-status dropdown as `Read`, run `processPendingNotifications()`, and confirm that mailed status becomes `Not required`.
+5. For a full digest test, create multiple honeypots, make their window deadline past, run `processPendingNotifications()`, and confirm one combined digest plus `Mailed` statuses.
 
 The honeypot capture tab is the expected audit result; rejection is not a system failure.
 
-Do not rename or delete the __FH_* system tabs. Do not grant general viewers access to those tabs because the queue contains operational recipient state.
+Do not rename or delete the managed tabs. Do not grant general viewers access to the hidden __FH_* tabs because the queue contains operational recipient state.
 
 ## 12. ✉️ Expected notification email
 
@@ -477,9 +525,9 @@ When the form includes a valid configured confirmation email field, that submitt
 
 The confirmation is sent only after the spreadsheet row exists. It is tracked as an independent queue recipient, so a failed confirmation does not prevent admin notifications and a failed admin notification does not prevent the confirmation retry.
 
-## 13. 📬 Queue, quota, and trigger behavior
+## 13. 🧱 Queue, rate limits, and recovery
 
-After a successful save, doPost immediately attempts a small recipient batch, prioritizing the submitter confirmation when one is configured. The website response may show notificationStatus or confirmationStatus as processing while the remaining recipients stay in the durable queue. The one-minute trigger is the backup for remaining recipients, quota delays, and retries.
+After a successful save, doPost immediately attempts up to five queued recipients, prioritizing the submitter confirmation when one is configured. The website response may show notificationStatus or confirmationStatus as processing while the remaining recipients stay in the durable queue. The one-minute trigger is the backup for remaining recipients, quota delays, retries, and due honeypot review digests.
 
 The one-minute trigger is best-effort scheduling by Apps Script, not a guaranteed one-minute delivery SLA. Gmail/provider processing, quota limits, temporary failures, and Apps Script load can still add delay.
 
@@ -499,6 +547,35 @@ Run processPendingNotifications() manually when testing or when you want to proc
 Run checkSystemHealth() to inspect pending notifications, failed notifications, trigger count, recipient diagnostics, remaining MailApp recipient quota, and recent useful errors.
 
 MailApp quota is account-wide and can be affected by other scripts or manual activity. The application reserve is conservative but cannot guarantee an account-wide reservation.
+
+### Runtime limits
+
+These limits are built into `Code.gs` and are intentionally kept out of the public `CONFIG` object:
+
+| Area | Default limit or behavior |
+|---|---|
+| Request body | 512 KiB maximum |
+| Fields | 80 fields per request; each field name up to 120 characters |
+| Field values | 10,000 characters per value; repeated form keys are preserved as separate values |
+| Website hostname | 253 characters; URLs, paths, ports, and invalid hostnames are rejected |
+| Rate limiting | 30 requests per normalized hostname in a 60-second CacheService window |
+| New tabs | 20 new managed tabs per hour across website and honeypot tabs |
+| Pending queue | 5,000 pending notification items; queue history is capped at 10,000 rows |
+| Immediate delivery | Up to 5 queued recipients are attempted after a successful save |
+| Worker delivery | Up to 25 email attempts per run or a four-minute worker budget |
+| Retry behavior | Temporary recipient failures retry up to 5 times with bounded exponential backoff and jitter |
+| Processing lease | A claimed recipient lease lasts 10 minutes before another worker can recover it |
+| Idempotency | Records are retained for 14 days, with a maximum of 3,000 records |
+| Operational log | The diagnostic log is retained at a maximum of 1,200 rows |
+| Mail content | Individual values are capped at 12,000 characters and each generated email at 60,000 characters |
+
+The rate limiter is best-effort because it uses `CacheService`; it is not an IP firewall and `_site` is a client-supplied routing hint. A request over the hostname limit returns `status: "retryable"`, `code: "rate_limited"`, and `retryable: true`. A temporary lock or capacity failure is also retryable. The backend never reports a stored submission until the Sheet row has been written.
+
+### Concurrency and failure recovery
+
+`LockService.getScriptLock()` protects shared spreadsheet, idempotency, queue-counter, and quota-accounting mutations. The lock waits up to five seconds. Mail sending happens after the lock is released, so slow mail providers do not hold up form storage. Queue recipient claims use leases; expired `processing` claims become recoverable. The queue tracks each recipient independently, allowing one failed address to retry without resending already successful recipients.
+
+Exactly-once email delivery cannot be guaranteed: if the Apps Script execution crashes after `MailApp.sendEmail()` succeeds but before the queue state is finalized, that recipient may be attempted again. `checkSystemHealth()` exposes pending counts, queue statuses, trigger counts, quota, configuration diagnostics, and recent operational errors.
 
 ## 14. 🔄 Updating the backend
 
@@ -526,6 +603,7 @@ Do not create a separate deployment for every code edit unless you intentionally
 | The script says Spreadsheet ID is not configured | Placeholder or full URL was pasted | Copy only the text between /d/ and /edit |
 | Authorization required | The owner has not authorized a new service/scope | Run setup() manually in the editor and approve access |
 | The form says invalid site | _site is missing, contains a full URL, or is localhost | Send only a hostname; use SITE_OVERRIDE for local testing |
+| The response says rate_limited | More than 30 requests arrived for that normalized hostname within the current 60-second window | Stop repeated retries, keep the same submission ID, and retry later with backoff |
 | The /exec URL returns an access error | Deployment audience is restricted | Edit the Web App deployment access setting |
 | /dev works but /exec does not | /dev is an editor-only test deployment | Deploy the Web App and use /exec |
 | Row is stored but mail is not immediate | Mail quota or queue trigger delay | Run processPendingNotifications() and checkSystemHealth() |
@@ -535,6 +613,7 @@ Do not create a separate deployment for every code edit unless you intentionally
 | Browser reports CORS failure | Apps Script cannot expose the response to that origin | Check Sheets/email before retrying; use native form navigation or a same-origin proxy |
 | Website tab is missing | Storage/lock/sheet-limit failure | Inspect the JSON response and Apps Script execution log; retry only when marked retryable |
 | Trigger is missing | It was deleted or authorization changed | Run setup() again and verify checkSystemHealth() |
+| A site is missing from __FH_SITE_CONFIG | The hostname tab has not been detected yet or the change trigger is delayed | Run setup() or handleSpreadsheetChange(); new hostname tabs receive the global fallback automatically |
 | Website tab name or header changed | An authorized editor changed protected structure | Wait for the change trigger or run setup(); the saved name/header structure will be restored |
 | Test client shows Add the Web App URL | config.js still contains the placeholder | Replace EXEC_URL with the deployed /exec URL |
 
@@ -558,6 +637,7 @@ Do not create a separate deployment for every code edit unless you intentionally
 - [ ] setup() completed successfully.
 - [ ] Authorization granted to the correct owner account.
 - [ ] Hidden system tabs created.
+- [ ] __FH_SITE_CONFIG is the first tab; it may contain only headers until the first website submission.
 - [ ] Exactly one queue trigger and one spreadsheet-change trigger exist.
 - [ ] testSubmission() passed.
 - [ ] Web App deployed as the owner with the intended access setting.
@@ -567,3 +647,4 @@ Do not create a separate deployment for every code edit unless you intentionally
 - [ ] A formatted notification email arrives.
 - [ ] checkSystemHealth() reports no important errors.
 - [ ] Real website forms send _site as the hostname and a stable _submission_id per retry.
+- [ ] Managed tab names and header rows are left unchanged by editors.

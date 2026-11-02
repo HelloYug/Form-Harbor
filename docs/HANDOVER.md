@@ -8,20 +8,20 @@
 - **Core Value Proposition**: One Google Apps Script Web App endpoint accepts form submissions from multiple websites, stores each website in its own dynamically evolving Google Sheet tab, and sends recoverable per-recipient notifications.
 - **Target Audience / End Users**: Website owners who need a lightweight contact/form backend without operating a separate server or database.
 - **Repository Root**: `E:\Yug Storage\Desktop\Yug Study\Programming\FormHarbour`
-- **Current Operational Status**: Initial implementation complete; requires a real Spreadsheet ID and notification addresses before deployment.
+- **Current Operational Status**: Feature-complete local implementation with 22 behavioral tests passing; requires a real Spreadsheet ID, notification addresses, Apps Script authorization, and a live deployment before production use.
 
 ## 2. 🧰 Technology Stack & Runtime Toolchain
 
 | Layer | Technology | Role |
 | :--- | :--- | :--- |
 | Runtime | Google Apps Script V8 / JavaScript | Web App endpoint, editor functions, and time-driven worker |
-| Persistence | Google Sheets via `SpreadsheetApp` | Website tabs, queue, idempotency index, and diagnostics |
-| Notifications | `MailApp` | Individual per-recipient messages with quota checks |
+| Persistence | Google Sheets via `SpreadsheetApp` | Website tabs, honeypot review tabs, queue, idempotency index, and diagnostics |
+| Notifications | `MailApp` | Individual per-recipient messages and grouped honeypot review digests with quota checks |
 | Concurrency | `LockService` | Script-wide critical sections for Sheets and shared state |
 | Short-lived controls | `CacheService` | Best-effort hostname throttling |
 | Durable state | `PropertiesService` | Idempotency records, queue counters/cursor, quota accounting |
 
-There is no local package manager, server process, or external database. The project is copied into an Apps Script project and deployed as a Web App.
+There is no local package manager, server process, or external database. The project is copied into a separate standalone Apps Script project and deployed as a Web App.
 
 ## 3. 🗺️ Directory Structure & Codebase Map
 
@@ -41,7 +41,8 @@ FormHarbour/
 ├── README.md               # Setup, deployment, integration, and limitations
 ├── docs/
 │   ├── HANDOVER.md         # This document
-│   └── SETUP.md            # Complete deployment and operations guide
+│   ├── SETUP.md            # Complete deployment and operations guide
+│   └── FRONTEND_INTEGRATION.md # Copy-ready prompts and integration recipes
 ├── .version_history/
 │   └── VERSION_TASKS.md    # Task execution record
 └── .agents/                # Repository-local agent rules and templates
@@ -52,7 +53,7 @@ FormHarbour/
 - `doPost(e)`: Parses a Web App event and returns a JSON body describing accepted, duplicate, rejected, retryable, or failed handling.
 - `setup()`: Validates configuration, initializes hidden system tabs, checks MailApp, and creates exactly one one-minute queue trigger plus one spreadsheet-change structure trigger.
 - `testSubmission()`: Performs a validation-only dry-run; it never writes a production row or sends email.
-- `processPendingNotifications()`: Claims and sends bounded individual recipient deliveries outside spreadsheet locks.
+- `processPendingNotifications()`: Queues due honeypot review digests, then claims and sends bounded individual recipient deliveries outside spreadsheet locks.
 - `checkSystemHealth()`: Returns concise administrator diagnostics.
 
 ## 4. 🔁 End-to-End Execution Flows & Runtime Architecture
@@ -99,11 +100,14 @@ sequenceDiagram
 
 Every website gets a tab named after its normalized hostname, or a deterministic hash-suffixed name when the hostname is longer than Sheets’ 100-character tab-name limit. Website tabs use Google Forms-style order: `Timestamp` first, user fields next, then reserved `__fh_` operational columns. User fields are appended; existing order and existing row values are preserved.
 
-Hidden system tabs:
+Workbook-managed tabs:
 
 - `__FH_QUEUE`: queue lifecycle and JSON recipient states (`pending`, `processing`, `retry`, `sent`, `failed`).
 - `__FH_INDEX`: operational submission index containing digest, sheet, row, and timestamp.
 - `__FH_LOG`: bounded event log without raw request bodies or form values.
+- `__FH_SITE_CONFIG`: visible first-tab per-hostname notification routing table; unlisted sites use the global fallback recipients.
+
+On first setup, when no website tab exists, `__FH_SITE_CONFIG` contains only its protected header row. The first normal hostname website tab is automatically registered with the global fallback recipients and `TRUE` enabled status. A honeypot-only tab remains separate and uses the global fallback until a site row exists. Editors can then replace that row with site-specific recipients or disable the site.
 
 ```mermaid
 erDiagram
@@ -150,6 +154,15 @@ erDiagram
 6. **Conservative quota accounting**: Actual `MailApp` remaining recipient quota, a rolling 24-hour application event budget, in-flight reservations, and the configured reserve percentage are combined. Account-wide guarantees are impossible when other scripts send mail.
 7. **Platform limitations are explicit**: The implementation does not claim unrestricted CORS, arbitrary HTTP status headers, preflight support, or mathematically exactly-once email delivery.
 
+### Operational bounds
+
+- Hostname throttling allows 30 requests per normalized site in a 60-second best-effort CacheService window.
+- Requests are bounded at 512 KiB, 80 fields, 120-character field names, and 10,000-character field values.
+- New managed tabs are capped at 20 per hour, pending notifications at 5,000, and queue history at 10,000 rows.
+- The immediate path attempts five recipients; the worker handles up to 25 per run within a four-minute budget, with five retries and ten-minute processing leases.
+- Idempotency records are retained for 14 days/3,000 records, logs for 1,200 rows, and completed queue history for 90 days.
+- The five-second script-lock wait returns a retryable response when shared state is busy.
+
 ## 7. 📌 Explicit User Preferences & Working Directives
 
 - Deliver the requested root files as `Code.gs` and `README.md`.
@@ -183,7 +196,7 @@ erDiagram
 - [x] README explicitly documents required form integration fields and exact hostname handling.
 - [x] Notifications include a formatted HTML/plain-text site header and complete submitted-field table with size-limit markers.
 - [x] Notifications set a clear sender display name, subject hostname, and semantic HTML submission headings.
-- [x] Dependency-free Node test harness passes all 17 behavioral scenarios.
+- [x] Dependency-free Node test harness passes all 22 behavioral scenarios.
 - [x] Only five Apps Script functions remain visible as manual entry points; internal helpers are scoped privately and the spreadsheet-change handler is a non-enumerable trigger binding.
 - [x] doPost attempts a bounded recipient batch immediately after persistence, with the one-minute durable trigger as backup.
 - [x] Reserved submission ID, source site, and notification status columns are protected ranges and re-aligned after schema changes.
@@ -191,7 +204,12 @@ erDiagram
 - [x] Valid submitter email fields receive separate saved-submission confirmations through the durable queue.
 - [x] Submitter email delivery and the local frontend success notice each have independent true/false configuration switches.
 - [x] UUID-shaped submission IDs are displayed as compact `fh-` identifiers while preserving original-ID retry identity.
-- [x] Honeypot hits are stored in protected `honeypot - <site>` review tabs without entering normal submissions or the email queue.
+- [x] Honeypot hits are stored in protected `honeypot - <site>` review tabs without entering normal website submissions; unread records use a five-day grouped digest queue.
+- [x] Honeypot review tabs provide an editable `Unread`/`Read` chip dropdown, protected mailed-status/window metadata, and normal submission email context for active unread records.
+- [x] `__FH_SITE_CONFIG` routes admin and honeypot digest mail per normalized website hostname with a global fallback.
+- [x] All system-created tab names are remembered and restored by the spreadsheet-change trigger; the site configuration tab is kept first.
+- [x] All managed tab headers are remembered and restored; deleted tabs are recreated by maintenance but their deleted historical data cannot be recovered automatically.
+- [x] Hidden queue, index, and log sheets are fully non-warning protected from non-owner editors, and queue workers reconcile renamed managed tabs before processing.
 - [x] The local test form keeps the same submission ID across retryable/network failures and rotates it only after success.
 - [x] The local test form prominently identifies the product as “FormHarbour by Yug Agarwal” and links the attribution to yugagarwal.dev.
 - [x] The test client fits standard full-height desktop viewports without vertical or horizontal scrolling; shorter viewports retain safe vertical overflow instead of clipping content.
@@ -200,7 +218,7 @@ erDiagram
 - [x] The test client header includes a responsive GitHub repository button linking to the FormHarbour source repository.
 - [x] Local test-server instructions bind explicitly to IPv4 `127.0.0.1` to avoid the `[::]` wildcard display.
 - [x] setup() and checkSystemHealth() use the script lock while mutating or recalculating shared queue state.
-- [x] Node syntax check and input-validation smoke tests completed in the local workspace.
+- [x] Node syntax checks, local IPv4 test-site serving, input-validation smoke tests, and 22 behavioral tests completed in the local workspace.
 
 ### Known limitations
 
