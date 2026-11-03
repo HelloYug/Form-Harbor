@@ -10,7 +10,7 @@
  * localhost as an unsafe website identifier.
  */
 window.FORMHARBOUR_CONFIG = Object.freeze({
-  EXEC_URL: "PASTE_YOUR_DEPLOYED_EXEC_URL_HERE",
+  EXEC_URL: "",
   SITE_OVERRIDE: "test.example.com",
 
   // Fallback for clients before the backend response is available. A matching

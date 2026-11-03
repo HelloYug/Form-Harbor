@@ -1,88 +1,260 @@
-# FormHarbour Google Apps Script backend 🛠️
+# FormHarbour 🛠️
+FormHarbour is a universal Google Apps Script backend for website forms. It
+accepts JSON or URL-encoded submissions from multiple websites, stores them in
+Google Sheets, and delivers formatted email notifications through a durable
+queue.
 
-[![Tests](https://github.com/HelloYug/Form-Harbor/actions/workflows/test.yml/badge.svg)](https://github.com/HelloYug/Form-Harbor/actions/workflows/test.yml)
+It is designed for website owners who want a lightweight form backend without
+running a separate server or database.
 
-FormHarbour is a universal Google Apps Script form backend. It receives forms from multiple websites, creates one Google Sheet tab per hostname, stores rows in Google Forms-style order, and delivers formatted email notifications through a durable queue.
+Created and maintained by [Yug Agarwal](https://yugagarwal.dev).
 
-Created and maintained by [Yug Agarwal](https://yugagarwal.dev). Source code is available under the [MIT License](LICENSE).
+## 🎯 Use cases
 
-## 🚀 Start here
+- Contact and enquiry forms.
+- Sponsorship, support, feedback, and lead forms.
+- Multiple domains or subdomains using one backend.
+- Separate notification recipients for different websites.
+- Optional submitter confirmation emails.
+- Honeypot review and bot-submission monitoring.
+- Small and medium-volume form workloads backed by Google Sheets.
 
-This repository contains the source backend and a local browser test client. It
-does not include a live Spreadsheet ID, notification address, or deployed Web
-App URL. Configure those placeholders locally by following the setup guide
-before running the backend.
+## 🔄 How the system works
 
-Use the complete [step-by-step setup guide](docs/SETUP.md). It covers Spreadsheet ID extraction, configuration, authorization, deployment, frontend integration, testing, triggers, email behavior, sheet protections, and troubleshooting.
+1. A website sends the form data to the deployed Apps Script Web App URL.
+2. FormHarbour validates the request, normalizes the hostname, and applies rate limiting.
+3. The submission is written to a website sheet with `Timestamp` first, followed by the form fields and protected operational columns.
+4. A durable queue record is created for each notification recipient.
+5. The Web App returns without waiting for email delivery.
+6. The five-minute worker sends queued mail, retries temporary failures, and recovers interrupted work.
+7. If a row was saved but queue creation failed, the worker reconstructs the missing queue record from the saved row.
 
-For copy-ready frontend prompts and code, see [Frontend Integration Recipes](docs/FRONTEND_INTEGRATION.md).
+## ✨ Features
 
-Quick overview:
+- Dynamic Google Forms-style sheet headers.
+- Multiline values remain in one cell and one submission row.
+- Per-site notification routing through `__FH_SITE_CONFIG`.
+- Manual domain grouping, such as `brand.com` and `brand.in` sharing one record sheet.
+- Actual incoming hostname preserved in `__fh_source_site` for statistics.
+- Compact `fh-` submission IDs for display.
+- Protected metadata columns and managed headers.
+- Automatic restoration of renamed managed sheets and headers.
+- Hidden and protected queue, index, and log sheets.
+- Individual recipient delivery instead of exposing recipients through CC/BCC.
+- Per-recipient retry state, leases, quota protection, and health diagnostics.
+- Optional confirmation email to the submitter.
+- Optional frontend saved-data notification.
+- Five-day honeypot review window with combined digest emails.
+- Formula-injection protection and bounded input validation.
+- Local test website and dependency-free automated test suite.
+
+## 📁 Project structure
+
+```text
+FormHarbour/
+├── Code.gs                         Apps Script backend
+├── README.md                       Project overview
+├── LICENSE                         MIT license
+├── docs/
+│   ├── SETUP.md                    Complete deployment and operations guide
+│   └── FRONTEND_INTEGRATION.md     Prompts and frontend code recipes
+├── tests/
+│   └── Code.test.js                Local behavioral test harness
+└── test-form/
+    ├── index.html                  Browser test form
+    ├── app.js                      Test form behavior
+    ├── config.js                   Local Web App URL configuration
+    └── styles.css                  Test form styling
+```
+
+## 📊 Workbook structure
+
+FormHarbour creates and manages these tabs:
+
+| Sheet | Purpose |
+|---|---|
+| `__FH_SITE_CONFIG` | Website recipients and per-site settings; always first |
+| `<submission_sheet>` | Website records with `Timestamp`, fields, and protected metadata |
+| `honeypot - <submission_sheet>` | Bot submissions awaiting review |
+| `__FH_QUEUE` | Hidden durable notification queue |
+| `__FH_INDEX` | Hidden submission index and idempotency reference |
+| `__FH_LOG` | Hidden bounded operational log |
+
+Website record columns are ordered as:
+
+```text
+Timestamp → form fields → __fh_submission_id → __fh_source_site → __fh_notification_status
+```
+
+The three `__fh_` columns are protected from manual editing.
+
+## ⚙️ Site configuration
+
+`__FH_SITE_CONFIG` uses this header structure:
+
+| site | notification_emails | enabled | send_confirmation_emails | show_confirmation_notification | submission_sheet |
+|---|---|---|---|---|---|
+| `example.com` | `admin@example.com` | `TRUE` | `FALSE` | `TRUE` | `example.com` |
+
+New website rows are added automatically with the global fallback recipient and
+the default settings. To group aliases manually, set the same
+`submission_sheet` value for both domains:
+
+| site | submission_sheet |
+|---|---|
+| `brand.com` | `brand.com` |
+| `brand.in` | `brand.com` |
+
+Both domains then share the record sheet, honeypot sheet, and rate limit, while
+`__fh_source_site` shows whether each submission came from `.com` or `.in`.
+
+## ✉️ Confirmation emails
+
+Confirmation emails are disabled by default:
+
+```js
+SEND_CONFIRMATION_EMAILS: false
+```
+
+When enabled, FormHarbour looks for a valid email address only in the field
+names listed in `CONFIRMATION_EMAIL_FIELD_NAMES`. Matching is case-insensitive
+and extra spaces are normalized, but the backend does not perform fuzzy matching
+automatically.
+
+The default checks only `email`:
+
+```js
+CONFIRMATION_EMAIL_FIELD_NAMES: ["email"]
+```
+
+If a website uses names such as `mail`, `work mail`, or `email address`, list
+them explicitly:
+
+```js
+CONFIRMATION_EMAIL_FIELD_NAMES: [
+  "email",
+  "mail",
+  "work mail",
+  "work_email",
+  "email address"
+]
+```
+
+The first valid address found is used. If no configured field contains a valid
+address, the form row is still saved and administrator notifications continue
+normally.
+
+## 🔌 Frontend integration requirements
+
+The existing website and its validation can remain unchanged. Add only the
+FormHarbour integration values:
+
+- `_site`: exact hostname, such as `form.yug.dev` or `yug.dev`.
+- `_submission_id`: stable ID reused when retrying the same submission.
+- `_honeypot`: optional hidden field that must remain empty for genuine users.
+- All ordinary form fields, including a normal `<textarea>` for multiline data.
+
+For ready-to-copy prompts and code, see
+[Frontend Integration Recipes](docs/FRONTEND_INTEGRATION.md).
+
+## 🚀 Setup and deployment
+
+Use the complete [step-by-step setup guide](docs/SETUP.md). The short version is:
 
 1. Create a separate standalone Apps Script project directly at [script.google.com](https://script.google.com/).
-2. Configure SPREADSHEET_ID and NOTIFICATION_EMAILS in Code.gs.
-3. Keep SEND_CONFIRMATION_EMAILS false unless submitter confirmation emails are required.
-4. Run setup() once in Apps Script and authorize the project.
-5. Deploy the project as a Web App running as the owner, then use the /exec URL.
-6. Add _site, _submission_id, and _honeypot to each existing website form.
-7. Submit a test form, inspect the generated site configuration row, and run checkSystemHealth().
+2. Copy `Code.gs` into that project.
+3. Extract the destination Spreadsheet ID from its Google Sheets URL.
+4. Set `SPREADSHEET_ID` and `NOTIFICATION_EMAILS` in `Code.gs`.
+5. Run `setup()` once and authorize the project.
+6. Deploy as a Web App running as the project owner.
+7. Copy the `/exec` URL into the frontend or local test client.
+8. Submit a test form and run `checkSystemHealth()`.
 
-## ⚙️ Default settings
+The setup guide also covers authorization, triggers, sheet protections, site
+configuration, aliases, honeypots, testing, deployment updates, and recovery.
 
-- SEND_CONFIRMATION_EMAILS: false
-- SHOW_CONFIRMATION_NOTIFICATION: true global fallback; per-site overrides are returned in the POST response
-- CONFIRMATION_EMAIL_FIELD_NAMES: ["email"]
-- SHOW_CONFIRMATION_NOTIFICATION: true in test-form/config.js
-- Immediate delivery attempts up to five queued recipients.
-- The recovery notification trigger runs every minute.
-- `__FH_SITE_CONFIG` stays as the first workbook tab and provides per-website recipients, with global `CONFIG.NOTIFICATION_EMAILS` as fallback.
-- On a brand-new workbook, `__FH_SITE_CONFIG` starts with only its header row. The first website submission automatically adds that hostname with the global recipients and the default settings `TRUE`, `FALSE`, `TRUE` for enabled, confirmation email, and frontend notice.
-
-## ✨ What the backend provides
-
-- Timestamp first, followed by form fields in first-submission order, then protected operational columns.
-- Dynamic schema evolution without losing existing row values.
-- Protected __fh_submission_id, __fh_source_site, and __fh_notification_status columns.
-- Protected website headers and automatic restoration of renamed website tabs.
-- System-created tabs are automatically restored to their managed names if renamed.
-- Internal queue, index, and log sheets are hidden and protected from non-owner manual edits.
-- `__FH_SITE_CONFIG` automatically registers new hostname tabs and lets each site override or disable its recipients.
-- `__FH_SITE_CONFIG` also controls per-site submitter confirmation emails and frontend saved-data notices.
-- Duplicate-safe submission handling with compact displayed IDs.
-- Formatted HTML/plain-text admin notifications and optional submitter confirmations.
-- Per-recipient retries, quota protection, leases, health diagnostics, and separate honeypot capture tabs with five-day unread review digests.
-- Script locking, hostname rate limiting, bounded sheet/queue growth, and safe retryable responses for temporary failures.
-- Queue workers reconcile managed sheet names before cleanup, digest creation, claiming, and final delivery.
-- The local test form preserves its submission ID when a request must be retried.
-- The test client uses one transparent `formharbour-logo.png` asset for both the visible logo and favicon.
-- Formula-injection protection and bounded input validation.
-
-## 🧪 Test locally
+## 🧪 Local testing
 
 Run the dependency-free test suite from the repository root:
 
-~~~text
+```text
 npm test
-~~~
+```
 
-The suite currently covers 23 behavioral scenarios.
+The suite currently contains 36 behavioral scenarios covering:
 
-The manual browser client is in [test-form/](test-form/). It presents the FormHarbour brand with “by Yug Agarwal” attribution, links to [yugagarwal.dev](https://yugagarwal.dev), and includes a GitHub repository button. Configure its deployed URL in [test-form/config.js](test-form/config.js), then run `python -m http.server 4173 --bind 127.0.0.1` from that folder and open `http://127.0.0.1:4173/`.
+- 100-submission load bursts.
+- Duplicate submissions and idempotency.
+- Rate limiting and retry behavior.
+- Dynamic headers and multiline values.
+- Alias-domain grouping.
+- Confirmation emails and honeypots.
+- Deferred queue recovery after a simulated queue-write failure.
+- Managed-column resizing during setup and scheduled maintenance.
 
-## 📁 Important files
+The browser test client is in [test-form/](test-form/). Configure its deployed
+URL in [test-form/config.js](test-form/config.js), then run:
 
-- [Code.gs](Code.gs) — self-contained Apps Script backend.
-- [docs/SETUP.md](docs/SETUP.md) — complete installation and operations guide.
-- [docs/FRONTEND_INTEGRATION.md](docs/FRONTEND_INTEGRATION.md) — frontend prompts and code recipes.
-- [tests/Code.test.js](tests/Code.test.js) — local behavioral test harness.
-- [test-form/](test-form/) — small browser test client.
+```powershell
+python -m http.server 4173 --bind 127.0.0.1
+```
 
-## 🔒 GitHub safety
+Open `http://127.0.0.1:4173/` in a browser.
 
-- Keep `SPREADSHEET_ID` and `NOTIFICATION_EMAILS` configured only for your own Apps Script copy.
-- Keep the deployed `/exec` URL configured only in your local `test-form/config.js` when appropriate.
-- Never commit Google credentials, private form submissions, exported spreadsheets, or other secrets.
-- The local test suite is intentionally included so changes can be checked before copying `Code.gs` into Apps Script.
+## 🛡️ Reliability and delivery behavior
+
+- Form rows are persisted before notification delivery.
+- Normal queue creation completes before the accepted response is returned.
+- Deferred rows are scanned and recovered by the worker.
+- Managed system columns are resized twice daily, defaulting to 09:00 and 18:00 in the spreadsheet timezone.
+- setup() resizes all existing managed sheets, and scheduled maintenance repeats the sizing twice daily.
+- Managed headers stay on one line and receive a readable minimum width, so long system names do not collapse into narrow wrapped columns.
+- The queue processes up to 25 email attempts per run.
+- Temporary delivery failures retry up to five times.
+- Processing leases recover work interrupted by an Apps Script execution limit.
+- A coalesced safety trigger runs about six minutes after queued work begins.
+- Site configuration is cached for two minutes and invalidated after edits.
+- The system uses script locks for shared spreadsheet and queue mutations.
+
+Email delivery is asynchronous. A five-minute Apps Script trigger is best effort,
+so provider processing, quota limits, temporary errors, and Apps Script load can
+add delay.
+
+## 📏 Runtime limits
+
+- 30 requests per normalized hostname in a rolling 60-second window.
+- 512 KiB request body.
+- 80 fields per request.
+- 10,000 characters per field value.
+- 20 new managed tabs per hour.
+- 5,000 pending notification items.
+- 100 deferred website rows scanned per worker run.
+- 10,000 queue-history rows.
+
+## ⚠️ Limitations
+
+- Apps Script Web Apps do not provide arbitrary HTTP status codes or guaranteed CORS behavior.
+- `_site` is a client-supplied routing hint and can be spoofed without an external trust boundary.
+- Exactly-once email delivery cannot be guaranteed; a crash immediately after a successful email send may cause a retry.
+- Google Sheets is not intended as unlimited high-volume storage.
+- Deleted historical sheets or records cannot be reconstructed automatically.
+- Absolute zero-loss guarantees are impossible if Google services, the account, or the workbook become unavailable.
+
+## 🔒 Security and repository safety
+
+- Do not commit Spreadsheet IDs, credentials, private submissions, or deployed URLs that should remain private.
+- Keep notification addresses in the Apps Script configuration or site config sheet, not frontend code.
+- Never expose the hidden queue, which contains operational recipient state.
+- Formula-shaped user values are escaped before being written to Sheets.
+
+## 🔄 After code changes
+
+1. Run `npm test`.
+2. Run the project syntax checks from the repository root.
+3. Copy the updated `Code.gs` into the standalone Apps Script project.
+4. Run `setup()` if triggers, permissions, or managed structures changed.
+5. Update the existing Web App deployment while keeping the same `/exec` URL.
+6. Submit a live test and run `checkSystemHealth()`.
 
 ## 👤 Author
 
@@ -90,28 +262,8 @@ The manual browser client is in [test-form/](test-form/). It presents the FormHa
 
 - Website: [yugagarwal.dev](https://yugagarwal.dev)
 - GitHub: [@HelloYug](https://github.com/HelloYug)
-- Project: [FormHarbour](https://github.com/HelloYug/Form-Harbor)
+- Repository: [FormHarbour](https://github.com/HelloYug/Form-Harbor)
 
 ## 📄 License
 
-FormHarbour is licensed under the [MIT License](LICENSE).
-
-## 🔄 After code changes
-
-Run npm test, copy the updated Code.gs into Apps Script, run setup() if triggers or permissions changed, and update the existing Web App deployment. Keep using the same /exec URL.
-
-Live authorization, Google Sheets behavior, Apps Script trigger timing, and MailApp delivery must still be verified once in the target Google account.
-
-## 🧱 Runtime limits and delivery behavior
-
-The backend uses conservative built-in limits to protect a Spreadsheet-backed deployment:
-
-- At most 30 requests per hostname in a rolling 60-second cache window.
-- Request body: 512 KiB maximum; 80 fields maximum; 120-character field names; 10,000 characters per field value.
-- At most 20 new website/honeypot tabs per hour and 5,000 pending notification items.
-- Up to five queued recipients are attempted immediately after persistence; the recovery worker processes at most 25 emails per run and runs every minute on a best-effort Apps Script schedule.
-- Temporary mail failures retry up to five times with backoff; processing leases expire after 10 minutes so interrupted work can be recovered.
-
-The script lock protects shared Sheets, queue, idempotency, and quota state during mutations. Mail is sent after the lock is released. A crash immediately after a successful mail send can still produce a duplicate retry because exactly-once email delivery is not possible with MailApp.
-
-See [the setup guide](docs/SETUP.md#13-queue-rate-limits-and-recovery) for the complete operational limits and response behavior.
+FormHarbour is released under the [MIT License](LICENSE).

@@ -9,7 +9,12 @@ const CONFIG = {
 
   // Replace this example address with one or more notification recipients.
   NOTIFICATION_EMAILS: [
-    "admin@example.com"
+    "admin@gexample.com"
+  ],
+
+  // Operational alerts are separate from normal form notifications.
+  ADMIN_ALERT_EMAILS: [
+    "admin@gexample.com"
   ],
 
   // A valid value in any of these form fields receives a saved-submission
@@ -23,41 +28,82 @@ const CONFIG = {
 
   TIMEZONE: "Asia/Kolkata",
 
+  // Daily traffic-time hours when managed system columns are auto-sized.
+  HEADER_RESIZE_TRIGGER_HOURS: [9, 18],
+
   EMAIL_QUOTA_RESERVE_PERCENT: 10
 };
 
 // Internal defaults are deliberately kept out of CONFIG. They are safe defaults
 // for ordinary contact forms and can be reviewed by an administrator if needed.
 const DEFAULTS = {
+  // Maximum accepted HTTP request body size in bytes.
   MAX_REQUEST_BYTES: 512 * 1024,
+  // Maximum number of submitted form fields per request.
   MAX_FIELDS: 80,
+  // Maximum length of one form field name in characters.
   MAX_FIELD_NAME_LENGTH: 120,
+  // Maximum length of one form field value in characters.
   MAX_FIELD_VALUE_LENGTH: 10000,
+  // Maximum length of a client-supplied submission ID.
   MAX_SUBMISSION_ID_LENGTH: 128,
+  // Maximum length of a normalized website hostname.
   MAX_SITE_LENGTH: 253,
+  // Maximum number of valid notification recipients per configuration.
   MAX_EMAIL_RECIPIENTS: 500,
-  IMMEDIATE_EMAILS_PER_SUBMISSION: 5,
-  NOTIFICATION_TRIGGER_MINUTES: 1,
+  // Interval in minutes for the primary notification worker trigger.
+  NOTIFICATION_TRIGGER_MINUTES: 5,
+  // Lifetime of cached site-routing settings in seconds.
+  SITE_CONFIG_CACHE_SECONDS: 120,
+  // Delay in milliseconds before the one-time queue safety trigger runs.
+  RECOVERY_TRIGGER_DELAY_MS: 6 * 60 * 1000,
+  // Minimum time between repeated alerts for the same administrator issue.
+  ADMIN_ALERT_COOLDOWN_MS: 15 * 60 * 1000,
+  // Length of the honeypot review window in milliseconds.
   HONEYPOT_REVIEW_WINDOW_MS: 5 * 24 * 60 * 60 * 1000,
+  // Rolling rate-limit window length in milliseconds.
   RATE_WINDOW_MS: 60 * 1000,
+  // Maximum accepted requests per grouped website within the rate window.
   MAX_REQUESTS_PER_SITE_WINDOW: 30,
+  // Maximum number of new managed sheets created in one hour.
   MAX_NEW_SHEETS_PER_HOUR: 20,
+  // Maximum number of active notification queue items.
   MAX_PENDING_NOTIFICATIONS: 5000,
+  // Maximum deferred website rows recovered during one worker run.
+  MAX_DEFERRED_RECOVERY_ROWS: 100,
+  // Maximum individual recipient attempts processed in one worker run.
   MAX_EMAILS_PER_RUN: 25,
+  // Maximum worker execution budget in milliseconds.
   WORKER_TIME_BUDGET_MS: 4 * 60 * 1000,
+  // Maximum queue rows inspected during one claim scan.
   MAX_QUEUE_SCAN_ROWS: 1000,
+  // Maximum total queue-history rows retained in the queue sheet.
   MAX_QUEUE_ROWS: 10000,
+  // Maximum delivery attempts allowed for one recipient.
   MAX_RETRIES: 5,
+  // Processing-claim lease length in milliseconds.
   PROCESSING_LEASE_MS: 10 * 60 * 1000,
+  // Maximum time maintenance functions wait for the shared script lock.
+  ADMIN_LOCK_WAIT_MS: 30000,
+  // Maximum time requests and worker operations wait for the shared lock.
   LOCK_WAIT_MS: 5000,
+  // How long idempotency records remain available in milliseconds.
   IDEMPOTENCY_RETENTION_MS: 14 * 24 * 60 * 60 * 1000,
+  // Maximum number of idempotency records retained in Script Properties.
   MAX_IDEMPOTENCY_RECORDS: 3000,
+  // Maximum number of diagnostic log rows retained.
   LOG_RETENTION_ROWS: 1200,
+  // How long completed queue rows remain before cleanup in milliseconds.
   QUEUE_RETENTION_MS: 90 * 24 * 60 * 60 * 1000,
+  // How long an in-flight quota reservation remains valid in milliseconds.
   QUOTA_RESERVATION_MS: 30 * 60 * 1000,
+  // Maximum rolling quota events retained for accounting.
   MAX_QUOTA_EVENTS: 200,
+  // Maximum characters retained for one email field value.
   EMAIL_VALUE_LIMIT: 12000,
+  // Maximum generated plain-text or HTML email body size.
   EMAIL_BODY_LIMIT: 60000,
+  // Display name used for FormHarbour notification emails.
   NOTIFICATION_SENDER_NAME: "FormHarbour Notifications"
 };
 
@@ -72,7 +118,8 @@ const SITE_CONFIG_HEADERS = [
   "notification_emails",
   "enabled",
   "send_confirmation_emails",
-  "show_confirmation_notification"
+  "show_confirmation_notification",
+  "submission_sheet"
 ];
 
 // Website tabs intentionally follow the familiar Google Forms layout: the
@@ -90,6 +137,7 @@ const HONEYPOT_MANAGED_HEADERS = [
   HONEYPOT_WINDOW_ID_HEADER,
   HONEYPOT_WINDOW_DEADLINE_HEADER
 ];
+const HONEYPOT_SYSTEM_HEADERS = ["_site", "_submission_id"];
 const HONEYPOT_READ_UNREAD = "Unread";
 const HONEYPOT_READ_READ = "Read";
 const HONEYPOT_MAIL_PENDING = "Pending";
@@ -114,6 +162,12 @@ const PROTECTION_DESCRIPTION_PREFIX = "FormHarbour reserved metadata: ";
 const HEADER_PROTECTION_DESCRIPTION = "FormHarbour locked header row";
 const SYSTEM_HEADER_PROTECTION_DESCRIPTION = "FormHarbour locked system header row";
 const SYSTEM_SHEET_PROTECTION_DESCRIPTION = "FormHarbour locked system sheet";
+const HEADER_STYLES = {
+  config: { background: "#0f766e", font: "#ffffff" },
+  site: { background: "#1f2937", font: "#ffffff" },
+  honeypot: { background: "#7f1d1d", font: "#ffffff" },
+  system: { background: "#374151", font: "#ffffff" }
+};
 
 const QUEUE_HEADERS = [
   "queue_id",
@@ -152,7 +206,11 @@ const PROP = {
   QUEUE_CURSOR: "__FH_QUEUE_CURSOR",
   QUOTA_STATE: "__FH_QUOTA_STATE",
   LAST_IDEM_CLEANUP: "__FH_LAST_IDEM_CLEANUP",
-  SHEET_STRUCTURE: "__FH_SHEET_STRUCTURE"
+  SHEET_STRUCTURE: "__FH_SHEET_STRUCTURE",
+  SITE_CONFIG_CACHE_VERSION: "__FH_SITE_CONFIG_CACHE_VERSION",
+  RECOVERY_TRIGGER_AT: "__FH_RECOVERY_TRIGGER_AT",
+  RECOVERY_TRIGGER_ID: "__FH_RECOVERY_TRIGGER_ID",
+  ALERT_PREFIX: "__FH_LAST_ALERT_"
 };
 
 // Keep implementation helpers inside a private scope. Apps Script lists every
@@ -174,20 +232,9 @@ function doPost(e) {
   var requestId = Utilities.getUuid();
   try {
     var result = handleSubmissionRequest(e, requestId);
-    // Try a small recipient batch immediately so normal submissions do not
-    // wait for the recovery trigger. The durable queue remains the source of
-    // truth and the trigger continues any remaining recipients or retries.
-    if (result && result.status === "accepted" && result.notificationStatus === "queued") {
-      try {
-        var immediate = processPendingNotifications(DEFAULTS.IMMEDIATE_EMAILS_PER_SUBMISSION);
-        if (immediate && immediate.processed > 0) {
-          result.notificationStatus = "processing";
-          if (result.confirmationStatus === "queued") result.confirmationStatus = "processing";
-        }
-      } catch (immediateError) {
-        safeLog("immediate_notification_failure", normalizeError(immediateError).code);
-      }
-    }
+    // Return as soon as the Sheet row and durable queue are persisted. Email
+    // delivery is intentionally handled by the five-minute worker so slow
+    // MailApp calls do not make the visitor wait for the form response.
     return jsonResponse(result);
   } catch (error) {
     var safeError = normalizeError(error);
@@ -236,11 +283,13 @@ var handleSubmissionRequest = function(e, requestId) {
   var response;
   try {
     var spreadsheet = openConfiguredSpreadsheet();
-    restoreRememberedSheetStructures(spreadsheet);
-    ensureSystemSheets(spreadsheet);
+    ensureRuntimeSystemSheets(spreadsheet);
     siteConfiguration = getSiteConfiguration(spreadsheet, site);
     recipients = siteConfiguration.recipients;
-    enforceRateLimit(site);
+    // Rate limiting follows the grouped record sheet, so aliases share one
+    // abuse budget instead of bypassing it by using different TLDs.
+    var submissionSite = siteConfiguration.submissionSite || site;
+    enforceRateLimit(submissionSite);
 
     // Honeypot submissions are deliberately recorded for review, but never
     // enter the normal website tab or idempotency store. A later worker may
@@ -248,7 +297,7 @@ var handleSubmissionRequest = function(e, requestId) {
     // Recording occurs after the same validation, rate limit, and lock checks
     // used by real submissions so bots cannot create unlimited tabs or rows.
     if (parsed.honeypotDetected) {
-      recordHoneypotSubmission(spreadsheet, site, parsed.fields);
+      recordHoneypotSubmission(spreadsheet, submissionSite, parsed.fields);
       SpreadsheetApp.flush();
       safeLog("honeypot_captured", "site=" + site + " request=" + requestId);
       return {
@@ -301,12 +350,12 @@ var handleSubmissionRequest = function(e, requestId) {
       };
     }
 
-    var sheet = getOrCreateSiteSheet(spreadsheet, site);
+    var sheet = getOrCreateSiteSheet(spreadsheet, submissionSite, site);
     var schema = ensureSiteHeaders(sheet, normalizedFields);
-    protectSiteStructure(sheet, schema.headers);
+    if (schema.changed) protectSiteStructure(sheet, schema.headers);
     var timestamp = formatIst(new Date());
-    // Queue the submitter confirmation first so it is the first message tried
-    // by the immediate one-recipient delivery path.
+    // Queue the submitter confirmation first so the worker prioritizes it
+    // before the administrator notification recipients.
     var queuedRecipients = confirmationEmail
       ? [{ email: confirmationEmail, kind: "confirmation" }]
       : [];
@@ -325,6 +374,10 @@ var handleSubmissionRequest = function(e, requestId) {
     });
     var rowNumber = sheet.getLastRow() + 1;
     sheet.getRange(rowNumber, 1, 1, rowValues.length).setValues([rowValues]);
+    // Commit the visitor's data before creating any dependent queue work. This
+    // small synchronization point protects the row-first durability contract;
+    // the remaining index/queue/status writes are still completed in one fast
+    // locked request and email delivery remains completely asynchronous.
     SpreadsheetApp.flush();
 
     var indexWarning = false;
@@ -414,9 +467,9 @@ var handleSubmissionRequest = function(e, requestId) {
           : "Submission accepted.")
     };
     SpreadsheetApp.flush();
-    safeLog(queueError ? "notification_deferred" : "submission_accepted",
-      "site=" + site + " submission=" + submissionId + (queueError ? " reason=" + queueError : ""));
-    maybeCleanupIdempotency();
+    if (queueError) {
+      safeLog("notification_deferred", "site=" + site + " submission=" + submissionId + " reason=" + queueError);
+    }
     return response;
   } catch (error) {
     var safeError = normalizeError(error);
@@ -686,6 +739,56 @@ var ensureSystemSheets = function(spreadsheet) {
   ensureSiteConfigFirst(spreadsheet);
 }
 
+/**
+ * Keeps the submission and worker lock sections short after setup has already
+ * initialized the managed tabs. Full protection and structure repair belongs
+ * to setup() and the spreadsheet-change trigger, not every public request.
+ * The fallback preserves first-request behavior for a brand-new test/workbook.
+ */
+var ensureRuntimeSystemSheets = function(spreadsheet) {
+  restoreRememberedSheetNames(spreadsheet);
+  var required = [
+    SYSTEM_SHEETS.QUEUE,
+    SYSTEM_SHEETS.INDEX,
+    SYSTEM_SHEETS.LOG,
+    SITE_CONFIG_SHEET_NAME
+  ];
+  var initialized = required.every(function(name) {
+    return Boolean(spreadsheet.getSheetByName(name));
+  });
+  if (!initialized) ensureSystemSheets(spreadsheet);
+}
+
+/**
+ * Restores only managed tab names during normal traffic. Full header,
+ * protection, and ordering reconciliation remains reserved for setup() and
+ * the spreadsheet-change trigger so public submissions stay fast. Stable
+ * Sheet IDs prevent a delayed change trigger from causing a duplicate queue
+ * or website tab after an authorized editor renames one.
+ */
+var restoreRememberedSheetNames = function(spreadsheet) {
+  var properties = PropertiesService.getScriptProperties();
+  var structures;
+  try { structures = JSON.parse(properties.getProperty(PROP.SHEET_STRUCTURE) || "{}"); } catch (error) { structures = {}; }
+  if (!structures || typeof structures !== "object") return;
+
+  var sheetsById = {};
+  spreadsheet.getSheets().forEach(function(sheet) {
+    sheetsById[sheetStructureId(sheet)] = sheet;
+  });
+  Object.keys(structures).forEach(function(id) {
+    var expected = structures[id];
+    var sheet = sheetsById[id];
+    if (!sheet || !expected || !expected.name) return;
+    if (sheet.getName() === expected.name || spreadsheet.getSheetByName(expected.name)) return;
+    try {
+      sheet.setName(expected.name);
+    } catch (error) {
+      safeLog("managed_sheet_name_restore_failure", String(expected.name));
+    }
+  });
+}
+
 var ensureSystemSheet = function(spreadsheet, name, headers) {
   var sheet = spreadsheet.getSheetByName(name);
   if (!sheet) sheet = spreadsheet.insertSheet(name);
@@ -695,6 +798,22 @@ var ensureSystemSheet = function(spreadsheet, name, headers) {
   protectSystemSheet(sheet);
   rememberSheetStructure(sheet, headers, "system");
   return sheet;
+}
+
+/** Backfills the grouping column without overwriting manual aliases. */
+var ensureSiteConfigSubmissionSheetValues = function(sheet) {
+  if (!sheet || sheet.getLastRow() < 2) return;
+  var rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, SITE_CONFIG_HEADERS.length).getValues();
+  rows.forEach(function(row, index) {
+    if (String(row[5] || "").trim()) return;
+    var rawSite = String(row[0] || "").trim();
+    if (!rawSite) return;
+    var parsedSite = parseSubmissionSheet(rawSite, "");
+    if (!parsedSite.valid) return;
+    // Update only the new column; preserve any existing formulas or manual
+    // values in the notification and feature-control columns.
+    sheet.getRange(index + 2, 6).setValue(parsedSite.value);
+  });
 }
 
 var ensureSiteConfigSheet = function(spreadsheet) {
@@ -707,6 +826,7 @@ var ensureSiteConfigSheet = function(spreadsheet) {
     return canonicalHeader(currentHeaders[index]) === canonicalHeader(header);
   });
   if (!headersMatch) sheet.getRange(1, 1, 1, SITE_CONFIG_HEADERS.length).setValues([SITE_CONFIG_HEADERS]);
+  ensureSiteConfigSubmissionSheetValues(sheet);
   protectHeaderRow(sheet, SITE_CONFIG_HEADERS);
   rememberSheetStructure(sheet, SITE_CONFIG_HEADERS, "config");
   return sheet;
@@ -763,16 +883,18 @@ var getOrCreateManagedSheet = function(spreadsheet, name) {
 }
 
 /**
- * Resolves the deterministic website tab name. The first column is created
- * immediately so the eventual schema starts in Google Forms order.
+ * Resolves the deterministic grouped record tab name. The source site is
+ * still registered independently so every incoming hostname remains visible
+ * in __fh_source_site and configurable in __FH_SITE_CONFIG.
  */
-var getOrCreateSiteSheet = function(spreadsheet, site) {
-  var sheet = getOrCreateManagedSheet(spreadsheet, siteTabName(site));
-  ensureSiteConfigRow(spreadsheet, site);
+var getOrCreateSiteSheet = function(spreadsheet, submissionSite, sourceSite) {
+  var sheet = getOrCreateManagedSheet(spreadsheet, siteTabName(submissionSite));
+  ensureSiteConfigRow(spreadsheet, sourceSite || submissionSite);
   // Start with the Google Forms-compatible first column. ensureSiteHeaders()
   // will append user fields and the reserved operational columns in one
   // ordered schema pass before the first row is written.
-  sheet.getRange(1, 1, 1, 1).setValues([[TIMESTAMP_HEADER]]);
+  var firstHeader = sheet.getLastColumn() ? String(sheet.getRange(1, 1).getValues()[0][0] || "") : "";
+  if (firstHeader !== TIMESTAMP_HEADER) sheet.getRange(1, 1, 1, 1).setValues([[TIMESTAMP_HEADER]]);
   return sheet;
 }
 
@@ -814,11 +936,18 @@ var recordHoneypotSubmission = function(spreadsheet, site, fields) {
       entries.push({ displayName: displayName, values: [] });
       existingIndex = entries.length - 1;
     }
-    entries[existingIndex].values = entries[existingIndex].values.concat(fields[name]);
+    // Keep honeypot IDs consistent with normal submissions. Honeypot records
+    // are not idempotency-processed, but their visible ID should still use the
+    // compact fh- format when the client supplied a UUID.
+    var captureValues = fields[name];
+    if (canonical === canonicalHeader("_submission_id")) {
+      captureValues = [normalizeSubmissionId(fields[name])];
+    }
+    entries[existingIndex].values = entries[existingIndex].values.concat(captureValues);
   });
 
   var schema = ensureHoneypotHeaders(sheet, entries);
-  protectHoneypotStructure(sheet, schema.headers);
+  if (schema.changed) protectHoneypotStructure(sheet, schema.headers);
   normalizeLegacyHoneypotRows(sheet, schema);
   var now = new Date().getTime();
   var reviewWindow = findActiveHoneypotWindow(sheet, schema, now);
@@ -840,7 +969,9 @@ var recordHoneypotSubmission = function(spreadsheet, site, fields) {
   });
   var rowNumber = sheet.getLastRow() + 1;
   sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
-  applyHoneypotReadValidation(sheet, schema.headers);
+  // Add the Read/Unread dropdown only to the row just created. Do not apply
+  // validation to unused rows all the way down the Sheet.
+  applyHoneypotReadValidation(sheet, schema.headers, rowNumber, 1);
 }
 
 /** Evolves a honeypot capture tab while preserving its received field order. */
@@ -898,7 +1029,7 @@ var ensureHoneypotHeaders = function(sheet, entries) {
   }
   var positions = Object.create(null);
   desiredHeaders.forEach(function(header, index) { positions[canonicalHeader(header)] = index; });
-  return { headers: desiredHeaders, positions: positions };
+  return { headers: desiredHeaders, positions: positions, changed: needsRewrite };
 }
 
 var normalizeLegacyHoneypotRows = function(sheet, schema) {
@@ -946,17 +1077,31 @@ var findActiveHoneypotWindow = function(sheet, schema, now) {
   return active;
 }
 
-var applyHoneypotReadValidation = function(sheet, headers) {
+var clearHoneypotReadValidation = function(sheet, headers) {
+  var columnIndex = -1;
+  headers.forEach(function(header, index) {
+    if (canonicalHeader(header) === canonicalHeader(HONEYPOT_READ_STATUS_HEADER)) columnIndex = index;
+  });
+  if (columnIndex < 0 || !sheet.getRange(2, columnIndex + 1, 1, 1).clearDataValidations) return;
+  sheet.getRange(2, columnIndex + 1, Math.max(1, sheet.getMaxRows() - 1), 1).clearDataValidations();
+}
+
+var applyHoneypotReadValidation = function(sheet, headers, startRow, rowCount) {
   var columnIndex = -1;
   headers.forEach(function(header, index) {
     if (canonicalHeader(header) === canonicalHeader(HONEYPOT_READ_STATUS_HEADER)) columnIndex = index;
   });
   if (columnIndex < 0 || !SpreadsheetApp.newDataValidation) return;
+  if (typeof startRow === "undefined") {
+    startRow = 2;
+    rowCount = Math.max(0, sheet.getLastRow() - 1);
+  }
+  if (!rowCount || rowCount < 1) return;
   var rule = SpreadsheetApp.newDataValidation()
     .requireValueInList([HONEYPOT_READ_UNREAD, HONEYPOT_READ_READ], true)
     .setAllowInvalid(false)
     .build();
-  sheet.getRange(2, columnIndex + 1, Math.max(1, sheet.getMaxRows() - 1), 1).setDataValidation(rule);
+  sheet.getRange(startRow, columnIndex + 1, rowCount, 1).setDataValidation(rule);
 }
 
 var readHoneypotRecords = function(sheet) {
@@ -1059,7 +1204,7 @@ var ensureSiteHeaders = function(sheet, fields) {
     var canonical = schemaHeaderKey(header);
     if (canonical) positions[canonical] = index;
   });
-  return { headers: headers, positions: positions };
+  return { headers: headers, positions: positions, changed: needsRewrite };
 }
 
 /** Treats the old timestamp name as an alias during one-time migration. */
@@ -1157,12 +1302,46 @@ var parseSiteConfigBoolean = function(value, fallback) {
   return { value: Boolean(fallback), valid: false };
 }
 
+/**
+ * Resolves the optional grouped storage hostname. Keeping this hostname-like
+ * prevents unsafe or ambiguous Google Sheet tab names while allowing aliases
+ * such as brand.com and brand.in to share one record and honeypot sheet.
+ */
+var parseSubmissionSheet = function(value, fallbackSite) {
+  var raw = String(value === null || typeof value === "undefined" ? "" : value).trim();
+  if (!raw) return { value: fallbackSite, valid: true };
+  try {
+    return { value: normalizeSite(raw), valid: true };
+  } catch (error) {
+    return { value: fallbackSite, valid: false };
+  }
+}
+
 var siteConfigEnabled = function(value) {
   return parseSiteConfigBoolean(value, true).value;
 }
 
 /** Returns all site-level controls, falling back to the global configuration. */
+var siteConfigurationCacheKey = function(site) {
+  var version = PropertiesService.getScriptProperties().getProperty(PROP.SITE_CONFIG_CACHE_VERSION) || "1";
+  return "fh_site_cfg_" + version + "_" + sha256(site).substring(0, 32);
+}
+
 var getSiteConfiguration = function(spreadsheet, site) {
+  var cacheKey = siteConfigurationCacheKey(site);
+  try {
+    var cached = CacheService.getScriptCache().get(cacheKey);
+    if (cached) {
+      var cachedConfiguration = JSON.parse(cached);
+      // A cache entry from before grouped sheets existed can remain alive
+      // briefly after an update. Preserve safe single-site behavior.
+      if (!cachedConfiguration.submissionSite) cachedConfiguration.submissionSite = site;
+      return cachedConfiguration;
+    }
+  } catch (cacheError) {
+    // CacheService is an optimization only; continue with the Sheet source.
+  }
+
   var fallback = normalizeRecipients(CONFIG.NOTIFICATION_EMAILS);
   fallback.source = "global_fallback";
   fallback.configured = false;
@@ -1170,10 +1349,14 @@ var getSiteConfiguration = function(spreadsheet, site) {
     recipients: fallback,
     sendConfirmationEmails: CONFIG.SEND_CONFIRMATION_EMAILS === true,
     showConfirmationNotification: CONFIG.SHOW_CONFIRMATION_NOTIFICATION !== false,
+    submissionSite: site,
     configured: false
   };
   var sheet = spreadsheet.getSheetByName(SITE_CONFIG_SHEET_NAME);
-  if (!sheet || sheet.getLastRow() < 2) return configuration;
+  if (!sheet || sheet.getLastRow() < 2) {
+    cacheSiteConfiguration(cacheKey, configuration);
+    return configuration;
+  }
   var rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, SITE_CONFIG_HEADERS.length).getValues();
   for (var i = 0; i < rows.length; i++) {
     var configuredSite = String(rows[i][0] || "").trim();
@@ -1188,20 +1371,56 @@ var getSiteConfiguration = function(spreadsheet, site) {
     var enabled = parseSiteConfigBoolean(rows[i][2], true);
     var confirmationEmails = parseSiteConfigBoolean(rows[i][3], configuration.sendConfirmationEmails);
     var frontendNotification = parseSiteConfigBoolean(rows[i][4], configuration.showConfirmationNotification);
+    var submissionSheet = parseSubmissionSheet(rows[i][5], site);
     configuration.sendConfirmationEmails = confirmationEmails.value;
     configuration.showConfirmationNotification = frontendNotification.value;
+    configuration.submissionSite = submissionSheet.value;
     configuration.configured = true;
     if (!enabled.value) {
       configuration.recipients = { valid: [], invalid: [], source: "site_disabled", configured: true };
+      cacheSiteConfiguration(cacheKey, configuration);
       return configuration;
     }
     var selected = normalizeRecipients(rows[i][1]);
     selected.source = "site_config";
     selected.configured = true;
     configuration.recipients = selected;
+    cacheSiteConfiguration(cacheKey, configuration);
     return configuration;
   }
+  cacheSiteConfiguration(cacheKey, configuration);
   return configuration;
+}
+
+var cacheSiteConfiguration = function(cacheKey, configuration) {
+  try {
+    CacheService.getScriptCache().put(
+      cacheKey,
+      JSON.stringify(configuration),
+      DEFAULTS.SITE_CONFIG_CACHE_SECONDS
+    );
+  } catch (cacheError) {
+    // A cache miss never prevents a valid form submission.
+  }
+}
+
+var invalidateSiteConfigurationCache = function(site) {
+  try {
+    CacheService.getScriptCache().remove(siteConfigurationCacheKey(site));
+  } catch (cacheError) {
+    // Cache invalidation is best effort; the two-minute TTL remains the guard.
+  }
+}
+
+/** Invalidates all cached site settings after a manual config-sheet edit. */
+var invalidateAllSiteConfigurationCache = function() {
+  try {
+    var properties = PropertiesService.getScriptProperties();
+    var current = Number(properties.getProperty(PROP.SITE_CONFIG_CACHE_VERSION) || 1);
+    properties.setProperty(PROP.SITE_CONFIG_CACHE_VERSION, String(current + 1));
+  } catch (cacheError) {
+    // The two-minute TTL remains the fallback if property invalidation fails.
+  }
 }
 
 /** Returns site-specific recipients, falling back to the global configuration. */
@@ -1225,9 +1444,11 @@ var ensureSiteConfigRow = function(spreadsheet, site) {
     fallback,
     "TRUE",
     CONFIG.SEND_CONFIRMATION_EMAILS === true ? "TRUE" : "FALSE",
-    CONFIG.SHOW_CONFIRMATION_NOTIFICATION === false ? "FALSE" : "TRUE"
+    CONFIG.SHOW_CONFIRMATION_NOTIFICATION === false ? "FALSE" : "TRUE",
+    site
   ]);
   applySiteConfigBooleanValidation(sheet, sheet.getLastRow(), 1);
+  invalidateSiteConfigurationCache(site);
 }
 
 var siteNameForWorkbookSheet = function(sheet) {
@@ -1277,7 +1498,8 @@ var inspectSiteConfig = function(spreadsheet) {
     var enabled = parseSiteConfigBoolean(row[2], true);
     var sendConfirmation = parseSiteConfigBoolean(row[3], CONFIG.SEND_CONFIRMATION_EMAILS === true);
     var showNotification = parseSiteConfigBoolean(row[4], CONFIG.SHOW_CONFIRMATION_NOTIFICATION !== false);
-    var invalid = !enabled.valid || !sendConfirmation.valid || !showNotification.valid;
+    var submissionSheet = parseSubmissionSheet(row[5], site);
+    var invalid = !enabled.valid || !sendConfirmation.valid || !showNotification.valid || !submissionSheet.valid;
     if (!enabled.value) result.disabledSiteCount++;
     if (enabled.value && !normalizeRecipients(row[1]).valid.length) invalid = true;
     if (invalid) result.invalidRows.push(index + 2);
@@ -1322,7 +1544,76 @@ var enqueueNotification = function(spreadsheet, item) {
     JSON.stringify(states),
     item.createdAt
   ]);
-  setPendingCount(getPendingCount() + 1);
+  // The queue row is the durable outbox record. If maintenance metadata or a
+  // trigger service is temporarily unavailable after this append, do not turn
+  // a successful durable write into a false queue error. The worker can
+  // recalculate the pending counter and the next scheduled run can continue.
+  try {
+    setPendingCount(getPendingCount() + 1);
+  } catch (counterError) {
+    safeLog("pending_count_update_failure", normalizeError(counterError).code);
+  }
+  try {
+    scheduleNotificationRecovery();
+  } catch (triggerError) {
+    safeLog("recovery_trigger_schedule_failure", normalizeError(triggerError).code);
+  }
+}
+
+/**
+ * Adds one coalesced safety execution for the current queue burst. The normal
+ * five-minute trigger remains primary; this one-time trigger only protects
+ * against a missed, delayed, or failed scheduled run.
+ */
+var scheduleNotificationRecovery = function() {
+  try {
+    var properties = PropertiesService.getScriptProperties();
+    var now = new Date().getTime();
+    var scheduledAt = Number(properties.getProperty(PROP.RECOVERY_TRIGGER_AT) || 0);
+    if (scheduledAt > now) return;
+    if (typeof ScriptApp === "undefined" || !ScriptApp.newTrigger) return;
+    var triggerBuilder = ScriptApp.newTrigger("processPendingNotifications").timeBased();
+    if (!triggerBuilder || typeof triggerBuilder.after !== "function") return;
+    var trigger = triggerBuilder.after(DEFAULTS.RECOVERY_TRIGGER_DELAY_MS).create();
+    if (trigger && typeof trigger.getUniqueId === "function") {
+      properties.setProperty(PROP.RECOVERY_TRIGGER_ID, String(trigger.getUniqueId()));
+    }
+    properties.setProperty(
+      PROP.RECOVERY_TRIGGER_AT,
+      String(now + DEFAULTS.RECOVERY_TRIGGER_DELAY_MS)
+    );
+  } catch (error) {
+    safeLog("recovery_trigger_schedule_failure", normalizeError(error).code);
+    sendAdminAlert("recovery_trigger_schedule_failure", normalizeError(error).code);
+  }
+}
+
+var finishNotificationRecovery = function(pendingCount) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(DEFAULTS.LOCK_WAIT_MS)) return;
+  try {
+    // Re-read under the shared lock. A submission can arrive while the worker
+    // is finishing; never delete its recovery trigger based on an old count.
+    var currentPendingCount = getPendingCount();
+    if (currentPendingCount > 0 || pendingCount > 0) {
+      scheduleNotificationRecovery();
+      return;
+    }
+    var recoveryId = PropertiesService.getScriptProperties().getProperty(PROP.RECOVERY_TRIGGER_ID);
+    if (recoveryId && typeof ScriptApp !== "undefined" && ScriptApp.getProjectTriggers) {
+      ScriptApp.getProjectTriggers().forEach(function(trigger) {
+        if (typeof trigger.getUniqueId === "function" && String(trigger.getUniqueId()) === String(recoveryId)) {
+          ScriptApp.deleteTrigger(trigger);
+        }
+      });
+    }
+    PropertiesService.getScriptProperties().deleteProperty(PROP.RECOVERY_TRIGGER_AT);
+    PropertiesService.getScriptProperties().deleteProperty(PROP.RECOVERY_TRIGGER_ID);
+  } catch (error) {
+    safeLog("recovery_trigger_state_failure", normalizeError(error).code);
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 var findIdempotencyRecord = function(key) {
@@ -1417,7 +1708,7 @@ var enqueueDueHoneypotDigests = function() {
   if (!lock.tryLock(DEFAULTS.LOCK_WAIT_MS)) return 0;
   try {
     var spreadsheet = openConfiguredSpreadsheet();
-    restoreRememberedSheetStructures(spreadsheet);
+    ensureRuntimeSystemSheets(spreadsheet);
     var now = new Date().getTime();
     var queued = 0;
     spreadsheet.getSheets().forEach(function(sheet) {
@@ -1471,6 +1762,141 @@ var enqueueDueHoneypotDigests = function() {
   }
 }
 
+/**
+ * Rebuilds notification queue work for rows that were durably written before
+ * the queue append or the row-status update completed. This is the critical
+ * outbox-recovery path: a visitor's accepted data remains in the website tab,
+ * and a later worker run can reconstruct the notification from that row.
+ *
+ * The scan is deliberately bounded and runs only in the worker, never in the
+ * public request path. Existing queue locations are indexed first so a crash
+ * after appendRow() cannot create a duplicate queue item.
+ */
+var recoverDeferredSubmissions = function() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(DEFAULTS.LOCK_WAIT_MS)) return 0;
+  try {
+    var spreadsheet = openConfiguredSpreadsheet();
+    ensureRuntimeSystemSheets(spreadsheet);
+    // Repair a stale counter before deciding whether a deferred row can enter
+    // the bounded queue. This is cheap worker-only maintenance and prevents a
+    // failed counter update from blocking otherwise recoverable work forever.
+    recalculatePendingCount(spreadsheet);
+    var queue = spreadsheet.getSheetByName(SYSTEM_SHEETS.QUEUE);
+    var locations = Object.create(null);
+    if (queue && queue.getLastRow() >= 2) {
+      var queueRows = queue.getRange(2, 1, queue.getLastRow() - 1, QUEUE_HEADERS.length).getValues();
+      queueRows.forEach(function(row) {
+        var sheetName = String(row[2] || "");
+        var sheetRow = Number(row[3] || 0);
+        if (!sheetName || !isFinite(sheetRow) || sheetRow < 2) return;
+        var key = sheetName + "|" + sheetRow;
+        locations[key] = String(row[7] || "");
+      });
+    }
+
+    var queued = 0;
+    spreadsheet.getSheets().forEach(function(sheet) {
+      if (queued >= DEFAULTS.MAX_DEFERRED_RECOVERY_ROWS) return;
+      var sheetName = sheet.getName();
+      if (sheetName === SITE_CONFIG_SHEET_NAME ||
+          Object.keys(SYSTEM_SHEETS).some(function(key) { return SYSTEM_SHEETS[key] === sheetName; }) ||
+          sheetName.indexOf(HONEYPOT_SHEET_PREFIX) === 0) return;
+      if (sheet.getLastRow() < 2 || !sheet.getLastColumn()) return;
+
+      var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      var positions = Object.create(null);
+      headers.forEach(function(header, index) {
+        var key = schemaHeaderKey(header);
+        if (key) positions[key] = index;
+      });
+      var statusIndex = positions[canonicalHeader(METADATA_HEADERS[3])];
+      if (statusIndex === undefined) return;
+      var sourceIndex = positions[canonicalHeader(METADATA_HEADERS[2])];
+      var idIndex = positions[canonicalHeader(METADATA_HEADERS[0])];
+      var timestampIndex = positions[canonicalHeader(TIMESTAMP_HEADER)];
+      var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, headers.length).getDisplayValues();
+
+      values.forEach(function(row, offset) {
+        if (queued >= DEFAULTS.MAX_DEFERRED_RECOVERY_ROWS) return;
+        var rowNumber = offset + 2;
+        var status = String(row[statusIndex] || "").trim();
+        if (["stored", "deferred_queue_full", "deferred_queue_error"].indexOf(status) < 0) return;
+
+        var locationKey = sheetName + "|" + rowNumber;
+        if (locations[locationKey]) {
+          // If the queue already reached a terminal state but the website-row
+          // status update failed, repair the visible status without re-mailing.
+          if (["sent", "failed", "partial_failed"].indexOf(locations[locationKey]) >= 0) {
+            updateSiteNotificationStatusByLocation(spreadsheet, sheetName, rowNumber, locations[locationKey]);
+          }
+          return;
+        }
+        if (getPendingCount() >= DEFAULTS.MAX_PENDING_NOTIFICATIONS) return;
+
+        var sourceSite = sourceIndex === undefined ? "" : String(row[sourceIndex] || "").trim();
+        if (!sourceSite) {
+          try { sourceSite = normalizeSite(sheetName); } catch (siteError) { return; }
+        } else {
+          try { sourceSite = normalizeSite(sourceSite); } catch (siteError) { return; }
+        }
+        var configuration = getSiteConfiguration(spreadsheet, sourceSite);
+        var recipients = configuration.recipients && configuration.recipients.valid
+          ? configuration.recipients.valid.slice()
+          : [];
+        var fields = Object.create(null);
+        headers.forEach(function(header, index) {
+          if (!header || isReservedMetadataHeader(header)) return;
+          var key = canonicalHeader(header);
+          fields[key] = { displayName: String(header), values: [String(row[index] || "")] };
+        });
+        var confirmationEmail = configuration.sendConfirmationEmails ? findConfirmationEmail(fields) : "";
+        var queuedRecipients = confirmationEmail
+          ? [{ email: confirmationEmail, kind: "confirmation" }]
+          : [];
+        queuedRecipients = queuedRecipients.concat(recipients.map(function(email) {
+          return { email: email, kind: "notification" };
+        }));
+        // Keep the deferred state recoverable if configuration was temporarily
+        // disabled or invalid. An administrator can fix the config sheet and a
+        // later worker run will retry the same persisted row.
+        if (!queuedRecipients.length) {
+          safeLog("deferred_recovery_no_recipients", "site=" + sourceSite + " row=" + rowNumber);
+          return;
+        }
+
+        var submissionId = idIndex === undefined ? "" : String(row[idIndex] || "").trim();
+        if (!submissionId) submissionId = "recovered-" + sha256(sheetName + "|" + rowNumber).substring(0, 16);
+        var createdAt = timestampIndex === undefined ? formatIst(new Date()) : String(row[timestampIndex] || formatIst(new Date()));
+        try {
+          enqueueNotification(spreadsheet, {
+            // Location-based duplicate protection above is the source of truth
+            // for this recovery path; the key is still useful in diagnostics.
+            submissionKey: "recovery|" + sheetName + "|" + rowNumber,
+            sheetName: sheetName,
+            sheetRow: rowNumber,
+            submissionId: submissionId,
+            sourceSite: sourceSite,
+            recipients: queuedRecipients,
+            createdAt: createdAt
+          });
+          updateSiteNotificationStatusByLocation(spreadsheet, sheetName, rowNumber, "queued");
+          locations[locationKey] = "pending";
+          queued++;
+        } catch (error) {
+          // Leave the row's deferred status intact. The next bounded worker run
+          // can retry after a full queue, temporary Sheet error, or quota issue.
+          safeLog("deferred_recovery_queue_failure", normalizeError(error).code);
+        }
+      });
+    });
+    if (queued) SpreadsheetApp.flush();
+    return queued;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 // The worker claims exactly one recipient at a time, sends without holding a
 // spreadsheet lock, and finalizes the state under a new bounded lock.
 /**
@@ -1479,52 +1905,99 @@ var enqueueDueHoneypotDigests = function() {
  * queue records remain durable for the next trigger run.
  */
 function processPendingNotifications(maxItems) {
-  cleanupQueueHistory();
-  var honeypotDigestsQueued = 0;
-  try {
-    honeypotDigestsQueued = enqueueDueHoneypotDigests();
-  } catch (honeypotQueueError) {
-    safeLog("honeypot_digest_scan_failure", normalizeError(honeypotQueueError).code);
-  }
   var processed = 0;
   var quotaBlocked = false;
-  var startedAt = new Date().getTime();
-  var itemLimit = Number(maxItems);
-  if (!isFinite(itemLimit) || itemLimit <= 0) itemLimit = DEFAULTS.MAX_EMAILS_PER_RUN;
-  itemLimit = Math.min(DEFAULTS.MAX_EMAILS_PER_RUN, Math.floor(itemLimit));
-  for (var i = 0; i < itemLimit; i++) {
-    if (new Date().getTime() - startedAt >= DEFAULTS.WORKER_TIME_BUDGET_MS) break;
-    var claim = claimNextNotification();
-    if (!claim) break;
-    if (claim.quotaBlocked) {
-      quotaBlocked = true;
-      safeLog("quota_limited", "notification worker paused");
-      break;
-    }
-    var outcome = { success: false, error: "" };
+  var deferredSubmissionsQueued = 0;
+  var honeypotDigestsQueued = 0;
+  try {
+    cleanupQueueHistory();
     try {
-      var email = buildNotificationEmail(claim);
-      if (email && email.skipSend) {
-        outcome.skipped = true;
-      } else {
-        MailApp.sendEmail({
-          to: claim.email,
-          subject: email.subject,
-          body: email.body,
-          htmlBody: email.htmlBody,
-          name: DEFAULTS.NOTIFICATION_SENDER_NAME
-        });
-      }
-      outcome.success = true;
-    } catch (error) {
-      outcome.error = safeErrorText(error);
+      // Property maintenance is deliberately outside the visitor request path.
+      maybeCleanupIdempotency();
+    } catch (cleanupError) {
+      safeLog("idempotency_cleanup_failure", normalizeError(cleanupError).code);
     }
-    finalizeNotificationClaim(claim, outcome);
-    processed++;
+    try {
+      deferredSubmissionsQueued = recoverDeferredSubmissions();
+    } catch (deferredRecoveryError) {
+      safeLog("deferred_recovery_scan_failure", normalizeError(deferredRecoveryError).code);
+    }
+    try {
+      honeypotDigestsQueued = enqueueDueHoneypotDigests();
+    } catch (honeypotQueueError) {
+      safeLog("honeypot_digest_scan_failure", normalizeError(honeypotQueueError).code);
+    }
+    var startedAt = new Date().getTime();
+    var emptyClaimPasses = 0;
+    var itemLimit = Number(maxItems);
+    if (!isFinite(itemLimit) || itemLimit <= 0) itemLimit = DEFAULTS.MAX_EMAILS_PER_RUN;
+    itemLimit = Math.min(DEFAULTS.MAX_EMAILS_PER_RUN, Math.floor(itemLimit));
+    for (var i = 0; i < itemLimit; i++) {
+      if (new Date().getTime() - startedAt >= DEFAULTS.WORKER_TIME_BUDGET_MS) break;
+      var claim = claimNextNotification();
+      if (!claim) {
+        // The queue cursor can reach the end while an earlier row still has
+        // another recipient pending. Allow one bounded second pass so a normal
+        // worker run does not unnecessarily defer that recipient until the next
+        // scheduled trigger.
+        emptyClaimPasses++;
+        if (emptyClaimPasses >= 2) break;
+        continue;
+      }
+      emptyClaimPasses = 0;
+      if (claim.quotaBlocked) {
+        quotaBlocked = true;
+        safeLog("quota_limited", "notification worker paused");
+        break;
+      }
+      var outcome = { success: false, error: "" };
+      try {
+        var email = buildNotificationEmail(claim);
+        if (email && email.skipSend) {
+          outcome.skipped = true;
+        } else {
+          MailApp.sendEmail({
+            to: claim.email,
+            subject: email.subject,
+            body: email.body,
+            htmlBody: email.htmlBody,
+            name: DEFAULTS.NOTIFICATION_SENDER_NAME
+          });
+        }
+        outcome.success = true;
+      } catch (error) {
+        outcome.error = safeErrorText(error);
+      }
+      finalizeNotificationClaim(claim, outcome);
+      processed++;
+    }
+    var result = {
+      processed: processed,
+      deferredSubmissionsQueued: deferredSubmissionsQueued,
+      honeypotDigestsQueued: honeypotDigestsQueued,
+      quotaBlocked: quotaBlocked
+    };
+    finishNotificationRecovery(getPendingCount());
+    Logger.log(JSON.stringify(result));
+    return result;
+  } catch (error) {
+    var safeError = normalizeError(error);
+    safeLog("notification_worker_failure", safeError.code);
+    // If this execution failed before it could finish recovery bookkeeping,
+    // request another bounded safety run instead of waiting for the next
+    // five-minute primary trigger.
+    scheduleNotificationRecovery();
+    sendAdminAlert("notification_worker_failure", safeError.code);
+    var failure = {
+      processed: processed,
+      deferredSubmissionsQueued: deferredSubmissionsQueued,
+      honeypotDigestsQueued: honeypotDigestsQueued,
+      quotaBlocked: quotaBlocked,
+      error: safeError.code
+    };
+    Logger.log(JSON.stringify(failure));
+    return failure;
   }
-  var result = { processed: processed, honeypotDigestsQueued: honeypotDigestsQueued, quotaBlocked: quotaBlocked };
-  Logger.log(JSON.stringify(result));
-  return result;
 }
 
 /** Claims one eligible recipient and creates a lease before releasing the lock. */
@@ -1533,8 +2006,7 @@ var claimNextNotification = function() {
   if (!lock.tryLock(DEFAULTS.LOCK_WAIT_MS)) return null;
   try {
     var spreadsheet = openConfiguredSpreadsheet();
-    restoreRememberedSheetStructures(spreadsheet);
-    ensureSystemSheets(spreadsheet);
+    ensureRuntimeSystemSheets(spreadsheet);
     var queue = spreadsheet.getSheetByName(SYSTEM_SHEETS.QUEUE);
     var lastRow = queue.getLastRow();
     if (lastRow < 2) return null;
@@ -1625,6 +2097,9 @@ var protectSiteStructure = function(sheet, headers) {
 var protectHoneypotStructure = function(sheet, headers) {
   protectHeaderRow(sheet, headers);
   protectHoneypotMetadataColumns(sheet, headers);
+  // Remove legacy full-column validation before restoring it only for rows
+  // that already contain data. Newly appended rows are handled separately.
+  clearHoneypotReadValidation(sheet, headers);
   applyHoneypotReadValidation(sheet, headers);
   rememberSheetStructure(sheet, headers, "honeypot");
 };
@@ -1635,11 +2110,94 @@ var removeManagedProtection = function(sheet, description) {
   });
 };
 
+/** Returns whether a header belongs to a FormHarbour-managed system column. */
+var isSystemColumnHeader = function(sheet, header) {
+  var sheetName = sheet.getName();
+  if (sheetName === SITE_CONFIG_SHEET_NAME ||
+      Object.keys(SYSTEM_SHEETS).some(function(key) { return SYSTEM_SHEETS[key] === sheetName; })) {
+    return true;
+  }
+  var canonical = schemaHeaderKey(header);
+  if (canonical === canonicalHeader(TIMESTAMP_HEADER) || canonical.indexOf("__fh_") === 0) return true;
+  if (sheetName.indexOf(HONEYPOT_SHEET_PREFIX) === 0) {
+    return HONEYPOT_MANAGED_HEADERS.concat(HONEYPOT_SYSTEM_HEADERS).some(function(systemHeader) {
+      return canonical === canonicalHeader(systemHeader);
+    });
+  }
+  return false;
+};
+
+/** Auto-sizes only managed columns, keeping formatting work bounded. */
+var autoResizeSystemColumns = function(sheet, headers) {
+  if (!sheet || !headers || !headers.length) return;
+  var columns = headers.map(function(header, index) {
+    return isSystemColumnHeader(sheet, header) ? index + 1 : 0;
+  }).filter(function(column) { return column > 0; });
+  if (!columns.length) return;
+
+  // Merge adjacent columns so Sheets receives the fewest formatting calls.
+  var ranges = [];
+  columns.forEach(function(column) {
+    var last = ranges[ranges.length - 1];
+    if (last && last.start + last.count === column) {
+      last.count++;
+    } else {
+      ranges.push({ start: column, count: 1 });
+    }
+  });
+  ranges.forEach(function(range) {
+    if (typeof sheet.autoResizeColumns === "function") {
+      sheet.autoResizeColumns(range.start, range.count);
+    } else if (typeof sheet.autoResizeColumn === "function") {
+      for (var column = range.start; column < range.start + range.count; column++) {
+        sheet.autoResizeColumn(column);
+      }
+    }
+  });
+
+  // Google Sheets can keep a wrapped header column too narrow after
+  // auto-resizing. Enforce a readable minimum derived from the header text.
+  headers.forEach(function(header, index) {
+    if (!isSystemColumnHeader(sheet, header) || typeof sheet.setColumnWidth !== "function") return;
+    var minimumWidth = Math.min(420, Math.max(120, String(header || "").length * 8 + 24));
+    var currentWidth = typeof sheet.getColumnWidth === "function"
+      ? Number(sheet.getColumnWidth(index + 1) || 0)
+      : 0;
+    if (!currentWidth || currentWidth < minimumWidth) {
+      sheet.setColumnWidth(index + 1, minimumWidth);
+    }
+  });
+};
+
+/** Resizes every managed system-column set during setup or maintenance. */
+var resizeAllManagedSystemColumns = function(spreadsheet) {
+  spreadsheet.getSheets().forEach(function(sheet) {
+    if (!sheet.getLastColumn()) return;
+    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    autoResizeSystemColumns(sheet, headers);
+  });
+};
+
 /** Prevents manual changes to the header row while allowing the script owner to update it. */
 var protectHeaderRow = function(sheet, headers, description) {
   var protectionDescription = description || HEADER_PROTECTION_DESCRIPTION;
+  var styleKind = sheet.getName() === SITE_CONFIG_SHEET_NAME
+    ? "config"
+    : (sheet.getName().indexOf(HONEYPOT_SHEET_PREFIX) === 0
+      ? "honeypot"
+      : (protectionDescription === SYSTEM_HEADER_PROTECTION_DESCRIPTION ? "system" : "site"));
+  var style = HEADER_STYLES[styleKind] || HEADER_STYLES.site;
+  var headerRange = sheet.getRange(1, 1, 1, headers.length);
+  // Keep all managed pages visually consistent while preserving the existing
+  // header protection and schema behavior.
+  if (headerRange.setBackground) headerRange.setBackground(style.background);
+  if (headerRange.setFontColor) headerRange.setFontColor(style.font);
+  if (headerRange.setFontWeight) headerRange.setFontWeight("bold");
+  if (headerRange.setHorizontalAlignment) headerRange.setHorizontalAlignment("center");
+  if (headerRange.setVerticalAlignment) headerRange.setVerticalAlignment("middle");
+  if (headerRange.setWrap) headerRange.setWrap(false);
   removeManagedProtection(sheet, protectionDescription);
-  var protection = sheet.getRange(1, 1, 1, headers.length).protect()
+  var protection = headerRange.protect()
     .setDescription(protectionDescription);
   protection.setWarningOnly(false);
   try {
@@ -1803,7 +2361,7 @@ var finalizeNotificationClaim = function(claim, outcome) {
   if (!lock.tryLock(DEFAULTS.LOCK_WAIT_MS)) return;
   try {
     var spreadsheet = openConfiguredSpreadsheet();
-    restoreRememberedSheetStructures(spreadsheet);
+    ensureRuntimeSystemSheets(spreadsheet);
     var queue = spreadsheet.getSheetByName(SYSTEM_SHEETS.QUEUE);
     if (!queue || claim.queueRow > queue.getLastRow()) {
       releaseQuota(claim.claimToken, false);
@@ -2037,7 +2595,11 @@ var buildNotificationEmail = function(claim) {
     lines.push("(No user fields were submitted.)");
     htmlRows.push("<tr><td colspan=\"2\" style=\"padding:14px;color:#6b7280\">No user fields were submitted.</td></tr>");
   }
-  var honeypotSummary = !isConfirmation ? getUnreadHoneypotSummary(spreadsheet, claim.sourceSite) : null;
+  var groupedSite = claim.sourceSite;
+  if (!isConfirmation) {
+    groupedSite = getSiteConfiguration(spreadsheet, claim.sourceSite).submissionSite || claim.sourceSite;
+  }
+  var honeypotSummary = !isConfirmation ? getUnreadHoneypotSummary(spreadsheet, groupedSite) : null;
   var honeypotNote = honeypotSummary && honeypotSummary.count
     ? honeypotSummary.count + " honeypot record(s) were also received in the last 5 days. View them: " + honeypotSummary.link
     : "";
@@ -2301,8 +2863,46 @@ var handleSpreadsheetChange = function(e) {
     restoreRememberedSheetStructures(spreadsheet);
     ensureSystemSheets(spreadsheet);
     ensureSiteConfigRowsForWebsiteSheets(spreadsheet);
+    invalidateAllSiteConfigurationCache();
   } catch (error) {
     safeLog("sheet_structure_restore_failure", normalizeError(error).code);
+  } finally {
+    lock.releaseLock();
+  }
+};
+
+/** Invalidates routing caches immediately after a user edits site config. */
+var handleSpreadsheetEdit = function(e) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(DEFAULTS.LOCK_WAIT_MS)) return;
+  try {
+    if (!e || !e.range || !e.range.getSheet) return;
+    var sheet = e.range.getSheet();
+    if (sheet.getName() !== SITE_CONFIG_SHEET_NAME) return;
+    // This also fills submission_sheet for a manually added site row. Existing
+    // nonblank grouping choices are never overwritten.
+    ensureSiteConfigSubmissionSheetValues(sheet);
+    invalidateAllSiteConfigurationCache();
+  } catch (error) {
+    safeLog("site_config_cache_invalidation_failure", normalizeError(error).code);
+  } finally {
+    lock.releaseLock();
+  }
+};
+
+/** Resizes managed system columns during the two daily maintenance windows. */
+var handleHeaderResize = function() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(DEFAULTS.ADMIN_LOCK_WAIT_MS)) return;
+  try {
+    var spreadsheet = openConfiguredSpreadsheet();
+    restoreRememberedSheetNames(spreadsheet);
+    ensureRuntimeSystemSheets(spreadsheet);
+    resizeAllManagedSystemColumns(spreadsheet);
+    SpreadsheetApp.flush();
+    safeLog("header_resize", "managed system columns resized");
+  } catch (error) {
+    safeLog("header_resize_failure", normalizeError(error).code);
   } finally {
     lock.releaseLock();
   }
@@ -2345,18 +2945,51 @@ var ensureStructureTrigger = function(spreadsheet) {
   if (!triggers.length) {
     ScriptApp.newTrigger("handleSpreadsheetChange").forSpreadsheet(spreadsheet).onChange().create();
   }
+
+  var editTriggers = ScriptApp.getProjectTriggers().filter(function(trigger) {
+    return trigger.getHandlerFunction() === "handleSpreadsheetEdit";
+  });
+  for (var j = 1; j < editTriggers.length; j++) ScriptApp.deleteTrigger(editTriggers[j]);
+  if (!editTriggers.length) {
+    ScriptApp.newTrigger("handleSpreadsheetEdit").forSpreadsheet(spreadsheet).onEdit().create();
+  }
+};
+
+/** Creates exactly two daily traffic-time column-resize triggers. */
+var ensureHeaderResizeTriggers = function() {
+  var existing = ScriptApp.getProjectTriggers().filter(function(trigger) {
+    return trigger.getHandlerFunction() === "handleHeaderResize";
+  });
+  existing.forEach(function(trigger) { ScriptApp.deleteTrigger(trigger); });
+
+  var configuredHours = Array.isArray(CONFIG.HEADER_RESIZE_TRIGGER_HOURS)
+    ? CONFIG.HEADER_RESIZE_TRIGGER_HOURS
+    : [9, 18];
+  var hours = configuredHours.map(Number).filter(function(hour) {
+    return isFinite(hour) && hour >= 0 && hour <= 23;
+  }).map(function(hour) {
+    return Math.floor(hour);
+  }).filter(function(hour, index, values) {
+    return values.indexOf(hour) === index;
+  });
+  if (hours.length !== 2) hours = [9, 18];
+  hours.forEach(function(hour) {
+    ScriptApp.newTrigger("handleHeaderResize").timeBased().atHour(hour).everyDays(1).create();
+  });
+  return hours.length;
 };
 
 // Administrator entry points and bounded maintenance operations.
 /**
  * Initializes hidden system tabs, validates the configured services, and
- * creates one notification trigger plus one structure-restore trigger.
+ * creates one notification trigger, one structure trigger, one config-edit
+ * trigger, and two daily header-resize triggers.
  * Repeated runs are safe.
  */
 function setup() {
   var diagnostics = { ok: false, errors: [], warnings: [], invalidRecipients: [] };
   var lock = LockService.getScriptLock();
-  if (!lock.tryLock(DEFAULTS.LOCK_WAIT_MS)) {
+  if (!lock.tryLock(DEFAULTS.ADMIN_LOCK_WAIT_MS)) {
     diagnostics.errors.push("The system is busy. Run setup() again shortly.");
     Logger.log(JSON.stringify(diagnostics));
     return diagnostics;
@@ -2373,6 +3006,7 @@ function setup() {
     if (siteConfig.invalidRows.length) diagnostics.warnings.push("Some site configuration rows have invalid sites or recipients.");
     if (siteConfig.duplicateSites.length) diagnostics.warnings.push("Duplicate site configuration rows exist for: " + siteConfig.duplicateSites.join(", "));
     protectExistingSiteSheets(spreadsheet);
+    resizeAllManagedSystemColumns(spreadsheet);
     ensureStructureTrigger(spreadsheet);
     recalculatePendingCount(spreadsheet);
     try { spreadsheet.setSpreadsheetTimeZone(CONFIG.TIMEZONE); } catch (timezoneError) {
@@ -2397,10 +3031,14 @@ function setup() {
       return trigger.getHandlerFunction() === "processPendingNotifications";
     });
     triggers.forEach(function(trigger) { ScriptApp.deleteTrigger(trigger); });
+    PropertiesService.getScriptProperties().deleteProperty(PROP.RECOVERY_TRIGGER_AT);
+    PropertiesService.getScriptProperties().deleteProperty(PROP.RECOVERY_TRIGGER_ID);
     ScriptApp.newTrigger("processPendingNotifications").timeBased()
       .everyMinutes(DEFAULTS.NOTIFICATION_TRIGGER_MINUTES).create();
+    diagnostics.headerResizeTriggerCount = ensureHeaderResizeTriggers();
     diagnostics.triggerCount = 1;
     diagnostics.structureTriggerCount = 1;
+    diagnostics.editTriggerCount = 1;
     diagnostics.spreadsheetName = spreadsheet.getName();
     diagnostics.remainingEmailRecipientQuota = quota === undefined ? null : quota;
     diagnostics.pendingNotifications = getPendingCount();
@@ -2453,7 +3091,7 @@ function testSubmission() {
 function checkSystemHealth() {
   var health = { ok: false, errors: [], warnings: [] };
   var lock = LockService.getScriptLock();
-  if (!lock.tryLock(DEFAULTS.LOCK_WAIT_MS)) {
+  if (!lock.tryLock(DEFAULTS.ADMIN_LOCK_WAIT_MS)) {
     health.errors.push("The system is busy. Run checkSystemHealth() again shortly.");
     Logger.log(JSON.stringify(health));
     return health;
@@ -2477,11 +3115,25 @@ function checkSystemHealth() {
         else if (status.indexOf("partial") === 0) counts.partial++;
       });
     }
-    var triggers = ScriptApp.getProjectTriggers().filter(function (trigger) {
+    var notificationTriggers = ScriptApp.getProjectTriggers().filter(function (trigger) {
       return trigger.getHandlerFunction() === "processPendingNotifications";
+    });
+    var recoveryTriggerId = PropertiesService.getScriptProperties().getProperty(PROP.RECOVERY_TRIGGER_ID);
+    var recoveryTriggers = notificationTriggers.filter(function(trigger) {
+      return recoveryTriggerId && typeof trigger.getUniqueId === "function" &&
+        String(trigger.getUniqueId()) === String(recoveryTriggerId);
+    });
+    var triggers = notificationTriggers.filter(function(trigger) {
+      return recoveryTriggers.indexOf(trigger) < 0;
     });
     var structureTriggers = ScriptApp.getProjectTriggers().filter(function (trigger) {
       return trigger.getHandlerFunction() === "handleSpreadsheetChange";
+    });
+    var editTriggers = ScriptApp.getProjectTriggers().filter(function (trigger) {
+      return trigger.getHandlerFunction() === "handleSpreadsheetEdit";
+    });
+    var headerResizeTriggers = ScriptApp.getProjectTriggers().filter(function (trigger) {
+      return trigger.getHandlerFunction() === "handleHeaderResize";
     });
     var remaining = null;
     try { remaining = MailApp.getRemainingDailyQuota(); } catch (quotaError) {
@@ -2490,6 +3142,8 @@ function checkSystemHealth() {
     if (!recipients.valid.length) health.warnings.push("No valid recipients are configured.");
     if (triggers.length !== 1) health.warnings.push("Notification trigger count is " + triggers.length + ". Run setup().");
     if (structureTriggers.length !== 1) health.warnings.push("Spreadsheet-change trigger count is " + structureTriggers.length + ". Run setup().");
+    if (editTriggers.length !== 1) health.warnings.push("Spreadsheet-edit trigger count is " + editTriggers.length + ". Run setup().");
+    if (headerResizeTriggers.length !== 2) health.warnings.push("Header-resize trigger count is " + headerResizeTriggers.length + ". Run setup().");
     if (getPendingCount() > DEFAULTS.MAX_PENDING_NOTIFICATIONS) health.warnings.push("Pending count exceeds the configured limit.");
     health.spreadsheet = spreadsheet.getName();
     health.pendingNotifications = getPendingCount();
@@ -2504,7 +3158,10 @@ function checkSystemHealth() {
     if (siteConfig.duplicateSites.length) health.warnings.push("Duplicate site configuration rows exist.");
     health.remainingEmailRecipientQuota = remaining;
     health.triggerCount = triggers.length;
+    health.recoveryTriggerCount = recoveryTriggers.length;
     health.structureTriggerCount = structureTriggers.length;
+    health.editTriggerCount = editTriggers.length;
+    health.headerResizeTriggerCount = headerResizeTriggers.length;
     health.confirmationEmailsEnabled = CONFIG.SEND_CONFIRMATION_EMAILS === true;
     health.recentErrors = recentErrors(spreadsheet);
     health.ok = health.errors.length === 0;
@@ -2555,7 +3212,7 @@ var cleanupQueueHistory = function() {
     var lastCleanup = Number(properties.getProperty("__FH_LAST_QUEUE_CLEANUP") || 0);
     if (now - lastCleanup < 24 * 60 * 60 * 1000) return;
     var spreadsheet = openConfiguredSpreadsheet();
-    restoreRememberedSheetStructures(spreadsheet);
+    ensureRuntimeSystemSheets(spreadsheet);
     var queue = spreadsheet.getSheetByName(SYSTEM_SHEETS.QUEUE);
     if (!queue || queue.getLastRow() < 2) {
       properties.setProperty("__FH_LAST_QUEUE_CLEANUP", String(now));
@@ -2632,6 +3289,45 @@ var safeLog = function(event, detail) {
   }
 }
 
+/** Sends rate-limited operational alerts to the configured administrators. */
+var sendAdminAlert = function(code, detail) {
+  try {
+    var recipients = normalizeRecipients(CONFIG.ADMIN_ALERT_EMAILS || []).valid;
+    if (!recipients.length) return;
+    var alertKey = PROP.ALERT_PREFIX + sha256(String(code)).substring(0, 24);
+    var properties = PropertiesService.getScriptProperties();
+    var now = new Date().getTime();
+    var lastSent = Number(properties.getProperty(alertKey) || 0);
+    if (lastSent && now - lastSent < DEFAULTS.ADMIN_ALERT_COOLDOWN_MS) return;
+
+    var sent = false;
+    recipients.forEach(function(email) {
+      try {
+        MailApp.sendEmail({
+          to: email,
+          subject: "FormHarbour alert | " + truncate(String(code), 100),
+          body: [
+            "FormHarbour detected an operational issue.",
+            "",
+            "Event: " + String(code),
+            "Time (IST): " + formatIst(new Date()),
+            "Detail: " + truncate(String(detail || ""), 500),
+            "",
+            "Run checkSystemHealth() for diagnostics."
+          ].join("\n"),
+          name: DEFAULTS.NOTIFICATION_SENDER_NAME
+        });
+        sent = true;
+      } catch (mailError) {
+        safeLog("admin_alert_delivery_failure", String(code));
+      }
+    });
+    if (sent) properties.setProperty(alertKey, String(now));
+  } catch (error) {
+    safeLog("admin_alert_failure", String(code));
+  }
+}
+
 var formatIst = function(date) {
   try {
     return Utilities.formatDate(date, CONFIG.TIMEZONE, "yyyy-MM-dd HH:mm:ss");
@@ -2693,6 +3389,14 @@ var safeErrorText = function(error) {
   // it does not become another visible option in the Apps Script picker.
   Object.defineProperty(globalThis, "handleSpreadsheetChange", {
     value: handleSpreadsheetChange,
+    configurable: true
+  });
+  Object.defineProperty(globalThis, "handleSpreadsheetEdit", {
+    value: handleSpreadsheetEdit,
+    configurable: true
+  });
+  Object.defineProperty(globalThis, "handleHeaderResize", {
+    value: handleHeaderResize,
     configurable: true
   });
 }());

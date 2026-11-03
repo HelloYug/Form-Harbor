@@ -46,8 +46,9 @@ Code:
 <!-- Add these inside the existing form. Keep the existing fields as they are. -->
 <input type="hidden" name="_site" id="form-site">
 <input type="hidden" name="_submission_id" id="form-submission-id">
-<input class="honeypot-field" type="text" name="_honeypot" tabindex="-1"
-       autocomplete="off" aria-hidden="true">
+<input class="honeypot-field" type="text" name="_honeypot" value=""
+       readonly tabindex="-1" autocomplete="new-password"
+       autocapitalize="none" spellcheck="false" aria-hidden="true">
 ~~~
 
 CSS:
@@ -91,7 +92,7 @@ function getFormHarbourSite() {
 document.getElementById("form-site").value = getFormHarbourSite();
 ~~~
 
-The backend normalizes one leading www. and creates the website tab from the hostname. Never use a value such as https://example.com/contact.
+The backend normalizes one leading `www.` and creates the record tab from the configured `submission_sheet` grouping, defaulting to the hostname. Never use a value such as `https://example.com/contact`.
 
 The hostname is a routing hint, not authentication. A public browser can spoof it, so use a trusted server-side proxy or authenticated integration if the endpoint must accept submissions only from an authorized origin.
 
@@ -128,16 +129,20 @@ Prompt:
 
 ~~~text
 Add a honeypot field named _honeypot that is unavailable to normal keyboard
-and screen-reader users but is still present in the submitted form. Do not
-validate it as a user field; FormHarbour rejects the submission if a bot fills it
-and records the received values in a separate `honeypot - sitename` review tab.
+and screen-reader users but is still present in the submitted form. Make it
+readonly and use autocomplete="new-password" because some browsers ignore
+autocomplete="off" and may autofill hidden fields with a company or contact
+value. Do not validate it as a user field; FormHarbour rejects the submission
+if a bot fills it and records the received values in a separate
+`honeypot - <submission_sheet>` review tab. Aliased domains share that tab.
 ~~~
 
 Code:
 
 ~~~html
-<input class="honeypot-field" type="text" name="_honeypot" tabindex="-1"
-       autocomplete="off" aria-hidden="true">
+<input class="honeypot-field" type="text" name="_honeypot" value=""
+       readonly tabindex="-1" autocomplete="new-password"
+       autocapitalize="none" spellcheck="false" aria-hidden="true">
 ~~~
 
 CSS:
@@ -237,10 +242,11 @@ Prompt:
 
 ~~~text
 Use the existing email field in this form for the submitter confirmation. It
-must be named email, or CONFIRMATION_EMAIL_FIELD_NAMES must be configured to
-match its existing name. Do not create a duplicate email field. Enable the
-saved-data confirmation only when SEND_CONFIRMATION_EMAILS is true, and keep
-admin notification addresses out of the frontend.
+may be named email, mail, work mail, work_email, or another existing name, but
+that exact name must be included in CONFIRMATION_EMAIL_FIELD_NAMES. FormHarbour
+does not fuzzy-match arbitrary field labels. Do not create a duplicate email
+field. Enable the saved-data confirmation only when SEND_CONFIRMATION_EMAILS is
+true, and keep admin notification addresses out of the frontend.
 ~~~
 
 Existing frontend field requirement:
@@ -254,10 +260,21 @@ Backend Code.gs configuration:
 
 ~~~javascript
 SEND_CONFIRMATION_EMAILS: true,
-CONFIRMATION_EMAIL_FIELD_NAMES: ["email"]
+CONFIRMATION_EMAIL_FIELD_NAMES: [
+  "email",
+  "mail",
+  "work mail",
+  "work_email",
+  "email address"
+]
 ~~~
 
-The default is SEND_CONFIRMATION_EMAILS: false. When enabled, the confirmation is queued only after the Sheet row is saved and includes the website name, timestamp, submission ID, and submitted fields.
+The default is SEND_CONFIRMATION_EMAILS: false. When enabled, FormHarbour uses
+the first valid address found in the configured field-name order. Matching is
+case-insensitive and repeated spaces are normalized, but spelling variants must
+be listed explicitly. The confirmation is queued only after the Sheet row is
+saved and includes the website name, timestamp, submission ID, and submitted
+fields.
 
 The per-site `send_confirmation_emails` column overrides the global backend default for that hostname. The per-site `show_confirmation_notification` column independently controls the frontend saved-data notice through the POST response.
 
@@ -330,4 +347,4 @@ function handleFormHarbourResult(result) {
 
 Common retryable codes include `lock_unavailable`, `rate_limited`, and `site_capacity`. The backend allows up to 30 requests per normalized hostname in a 60-second best-effort window. Do not loop rapidly when `rate_limited` is returned. A duplicate response means the original request was already accepted, so do not generate a new ID.
 
-The backend persists the Sheet row before attempting email. `notificationStatus: "queued"` or `"processing"` describes delivery work only; it does not mean the form data failed to save. The local test client keeps the same ID across network and response-reading failures for this reason.
+The backend persists the Sheet row before returning and normally persists the durable notification queue as part of the same locked workflow. New accepted submissions normally report `notificationStatus: "queued"`; `"processing"` may appear on a later duplicate request if a worker has already claimed delivery. If a transient queue write is interrupted after the row is saved, the response can report `deferred_queue_error` or `deferred_queue_full`; the five-minute worker reconstructs the queue from the saved row. These values describe delivery work only; they do not mean the form data failed to save. The local test client keeps the same ID across network and response-reading failures for this reason.

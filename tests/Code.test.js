@@ -53,6 +53,33 @@ class MockRange {
     return this;
   }
 
+  clearDataValidations() {
+    const firstRow = this.row;
+    const lastRow = this.row + this.rowCount - 1;
+    const firstColumn = this.column;
+    const lastColumn = this.column + this.columnCount - 1;
+    this.sheet.dataValidations = this.sheet.dataValidations.filter((validation) => {
+      const validationLastRow = validation.row + validation.rowCount - 1;
+      const validationLastColumn = validation.column + validation.columnCount - 1;
+      const overlapsRows = validation.row <= lastRow && validationLastRow >= firstRow;
+      const overlapsColumns = validation.column <= lastColumn && validationLastColumn >= firstColumn;
+      return !(overlapsRows && overlapsColumns);
+    });
+    return this;
+  }
+
+  setBackground() { return this; }
+
+  setFontColor() { return this; }
+
+  setFontWeight() { return this; }
+
+  setHorizontalAlignment() { return this; }
+
+  setVerticalAlignment() { return this; }
+
+  setWrap() { return this; }
+
   clearContent() {
     this.sheet.clear(this.row, this.column, this.rowCount, this.columnCount);
     return this;
@@ -127,6 +154,8 @@ class MockSheet {
     this.hidden = false;
     this.protections = [];
     this.dataValidations = [];
+    this.autoResizeCalls = [];
+    this.columnWidths = {};
   }
 
   getName() {
@@ -241,6 +270,23 @@ class MockSheet {
     this.deleteRows(row, 1);
   }
 
+  autoResizeColumns(startColumn, columnCount) {
+    this.autoResizeCalls.push([startColumn, columnCount]);
+  }
+
+  autoResizeColumn(column) {
+    this.autoResizeCalls.push([column, 1]);
+  }
+
+  getColumnWidth(column) {
+    return this.columnWidths[column] || 100;
+  }
+
+  setColumnWidth(column, width) {
+    this.columnWidths[column] = width;
+    return this;
+  }
+
   hideSheet() {
     this.hidden = true;
   }
@@ -307,6 +353,7 @@ function makeHarness({
   const properties = new Map();
   const cache = new Map();
   const triggers = [];
+  let triggerSequence = 0;
   const sentMail = [];
   const uuidState = { count: 0 };
   const mail = {
@@ -380,6 +427,9 @@ function makeHarness({
           },
           put(key, value) {
             cache.set(key, { value });
+          },
+          remove(key) {
+            cache.delete(key);
           }
         };
       }
@@ -406,8 +456,12 @@ function makeHarness({
       newTrigger(handler) {
         const trigger = {
           handler,
+          uniqueId: "trigger-" + (++triggerSequence),
           getHandlerFunction() {
             return this.handler;
+          },
+          getUniqueId() {
+            return this.uniqueId;
           },
           timeBased() {
             return this;
@@ -416,7 +470,22 @@ function makeHarness({
             this.interval = arguments[0];
             return this;
           },
+          after(delayMs) {
+            this.delayMs = delayMs;
+            return this;
+          },
+          atHour(hour) {
+            this.hour = hour;
+            return this;
+          },
+          everyDays(days) {
+            this.days = days;
+            return this;
+          },
           forSpreadsheet() {
+            return this;
+          },
+          onEdit() {
             return this;
           },
           onChange() {
@@ -548,20 +617,25 @@ test("setup is idempotent and initializes protected system sheets", () => {
 
   assert.equal(first.ok, true);
   assert.equal(second.ok, true);
-  assert.equal(harness.triggers.length, 2);
+  assert.equal(harness.triggers.length, 5);
   const config = harness.spreadsheet.getSheetByName("__FH_SITE_CONFIG");
   assert.ok(config);
   assert.equal(harness.spreadsheet.getSheets()[0].getName(), "__FH_SITE_CONFIG");
   assert.equal(config.isSheetHidden(), false);
-  assert.deepEqual(config.getRange(1, 1, 1, 5).getValues()[0], [
+  assert.deepEqual(config.getRange(1, 1, 1, 6).getValues()[0], [
     "site",
     "notification_emails",
     "enabled",
     "send_confirmation_emails",
-    "show_confirmation_notification"
+    "show_confirmation_notification",
+    "submission_sheet"
   ]);
   assert.equal(config.dataValidations.length, 0);
-  assert.equal(harness.triggers.find((trigger) => trigger.handler === "processPendingNotifications").interval, 1);
+  assert.equal(harness.triggers.find((trigger) => trigger.handler === "processPendingNotifications").interval, 5);
+  assert.deepEqual(
+    harness.triggers.filter((trigger) => trigger.handler === "handleHeaderResize").map((trigger) => trigger.hour).sort((a, b) => a - b),
+    [9, 18]
+  );
   assert.ok(harness.spreadsheet.getSheetByName("__FH_QUEUE").isSheetHidden());
   assert.ok(harness.spreadsheet.getSheetByName("__FH_INDEX").isSheetHidden());
   ["__FH_QUEUE", "__FH_INDEX", "__FH_LOG"].forEach((name) => {
@@ -578,6 +652,27 @@ test("setup is idempotent and initializes protected system sheets", () => {
     assert.equal(sheetProtection.warningOnly, false);
   });
   assert.equal(second.invalidRecipients.length, 1);
+});
+
+test("migrates existing site configuration rows to the grouped-sheet column", () => {
+  const harness = makeHarness();
+  const config = harness.spreadsheet.insertSheet("__FH_SITE_CONFIG");
+  config.getRange(1, 1, 2, 5).setValues([
+    ["site", "notification_emails", "enabled", "send_confirmation_emails", "show_confirmation_notification"],
+    ["legacy.example.com", "admin@example.com", "TRUE", "FALSE", "TRUE"]
+  ]);
+
+  harness.context.setup();
+
+  assert.deepEqual(config.getRange(1, 1, 1, 6).getValues()[0], [
+    "site",
+    "notification_emails",
+    "enabled",
+    "send_confirmation_emails",
+    "show_confirmation_notification",
+    "submission_sheet"
+  ]);
+  assert.equal(config.getRange(2, 6).getValues()[0][0], "legacy.example.com");
 });
 
 test("restores renamed system and configuration sheets", () => {
@@ -615,8 +710,9 @@ test("accepts repeated form keys, preserves blanks, creates Google Forms-style h
 
   assert.equal(response.status, "accepted");
   assert.equal(response.sourceWebsite, "example.com");
-  assert.equal(response.notificationStatus, "processing");
+  assert.equal(response.notificationStatus, "queued");
   assert.equal(JSON.stringify(response).includes("admin@example.com"), false);
+  assert.equal(harness.mail.sentMail.length, 0);
 
   const sheet = siteSheet(harness);
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
@@ -668,10 +764,90 @@ test("routes notifications by website configuration with global fallback", () =>
   const disabledResponse = harness.postForm({ _site: "site-disabled.com", _submission_id: "site-disabled-1", name: "Disabled" });
 
   assert.equal(disabledResponse.notificationStatus, "no_valid_recipients");
+  harness.context.processPendingNotifications();
   assert.deepEqual(
-    harness.mail.sentMail.map((mail) => mail.to),
+    harness.mail.sentMail.map((mail) => mail.to).sort(),
     ["a@example.com", "b@example.com", "c@example.com", "d@example.com", "f@example.com", "fallback@example.com"]
   );
+});
+
+test("groups alias domains into one record and honeypot sheet while preserving source domains", () => {
+  const harness = makeHarness({ recipients: ["admin@example.com"] });
+  harness.context.setup();
+  const config = harness.spreadsheet.getSheetByName("__FH_SITE_CONFIG");
+  config.getRange(2, 1, 2, 6).setValues([
+    ["brand.com", "admin@example.com", "TRUE", "FALSE", "TRUE", "brand.com"],
+    ["brand.in", "admin@example.com", "TRUE", "FALSE", "TRUE", "brand.com"]
+  ]);
+  harness.context.handleSpreadsheetEdit({
+    range: {
+      getSheet() { return config; },
+      getRow() { return 2; },
+      getNumRows() { return 2; }
+    }
+  });
+
+  const responses = [];
+  for (let index = 0; index < 30; index += 1) {
+    const sourceSite = index % 2 === 0 ? "brand.com" : "brand.in";
+    responses.push(harness.postForm({
+      _site: sourceSite,
+      _submission_id: `alias-${index}`,
+      name: `Alias ${index}`
+    }));
+  }
+  const rateLimited = harness.postForm({
+    _site: "brand.in",
+    _submission_id: "alias-rate-limited",
+    name: "Rate limited"
+  });
+
+  assert.ok(responses.every((response) => response.status === "accepted"));
+  assert.equal(rateLimited.code, "rate_limited");
+  const records = siteSheet(harness, "brand.com");
+  assert.equal(harness.spreadsheet.getSheetByName("brand.in"), null);
+  assert.equal(records.getLastRow(), 31);
+  const headers = records.getRange(1, 1, 1, records.getLastColumn()).getValues()[0];
+  const sourceColumn = headers.indexOf("__fh_source_site") + 1;
+  const sources = records.getRange(2, sourceColumn, 30, 1).getValues().flat();
+  assert.equal(sources.filter((source) => source === "brand.com").length, 15);
+  assert.equal(sources.filter((source) => source === "brand.in").length, 15);
+  assert.equal(queueRows(harness).length, 30);
+  assert.ok(queueRows(harness).every((row) => row[2] === "brand.com"));
+
+  const configRows = config.getRange(2, 1, 2, 6).getValues();
+  assert.deepEqual(configRows.map((row) => row[5]), ["brand.com", "brand.com"]);
+
+  const honeypotHarness = makeHarness({ recipients: ["admin@example.com"] });
+  honeypotHarness.context.setup();
+  const honeypotConfig = honeypotHarness.spreadsheet.getSheetByName("__FH_SITE_CONFIG");
+  honeypotConfig.getRange(2, 1, 2, 6).setValues([
+    ["brand.com", "admin@example.com", "TRUE", "FALSE", "TRUE", "brand.com"],
+    ["brand.in", "admin@example.com", "TRUE", "FALSE", "TRUE", "brand.com"]
+  ]);
+  honeypotHarness.context.handleSpreadsheetEdit({
+    range: {
+      getSheet() { return honeypotConfig; },
+      getRow() { return 2; },
+      getNumRows() { return 2; }
+    }
+  });
+  honeypotHarness.postForm({
+    _site: "brand.com",
+    _submission_id: "honeypot-com",
+    _honeypot: "filled",
+    name: "Com bot"
+  });
+  honeypotHarness.postForm({
+    _site: "brand.in",
+    _submission_id: "honeypot-in",
+    _honeypot: "filled",
+    name: "In bot"
+  });
+  const groupedHoneypot = honeypotHarness.spreadsheet.getSheetByName("honeypot - brand.com");
+  assert.ok(groupedHoneypot);
+  assert.equal(honeypotHarness.spreadsheet.getSheetByName("honeypot - brand.in"), null);
+  assert.equal(groupedHoneypot.getLastRow(), 3);
 });
 
 test("routes confirmation email and frontend notice settings per website", () => {
@@ -697,13 +873,60 @@ test("routes confirmation email and frontend notice settings per website", () =>
   });
 
   assert.equal(siteA.showConfirmationNotification, false);
-  assert.equal(siteA.confirmationStatus, "processing");
+  assert.equal(siteA.confirmationStatus, "queued");
   assert.equal(siteB.showConfirmationNotification, true);
   assert.equal(siteB.confirmationStatus, "disabled");
+  assert.equal(harness.mail.sentMail.length, 0);
+  harness.context.processPendingNotifications();
   assert.deepEqual(
-    harness.mail.sentMail.map((mail) => mail.to),
-    ["submitter-a@example.com", "a@example.com", "b@example.com"]
+    harness.mail.sentMail.map((mail) => mail.to).sort(),
+    ["submitter-a@example.com", "a@example.com", "b@example.com"].sort()
   );
+});
+
+test("invalidates site configuration cache when a new site row is created", () => {
+  const harness = makeHarness({ recipients: ["fallback@example.com"] });
+  harness.postForm({ _site: "cache.example.com", _submission_id: "cache-1", name: "First" });
+  const config = harness.spreadsheet.getSheetByName("__FH_SITE_CONFIG");
+  config.getRange(2, 2).setValue("site-owner@example.com");
+
+  harness.postForm({ _site: "cache.example.com", _submission_id: "cache-2", name: "Second" });
+  const states = JSON.parse(queueRows(harness)[1][12]);
+  assert.deepEqual(states.map((state) => state.email), ["site-owner@example.com"]);
+});
+
+test("invalidates all site configuration caches after a config-sheet edit", () => {
+  const harness = makeHarness({ recipients: ["fallback@example.com"] });
+  harness.postForm({ _site: "edited-cache.example.com", _submission_id: "edited-cache-1", name: "First" });
+  const config = harness.spreadsheet.getSheetByName("__FH_SITE_CONFIG");
+  config.getRange(2, 2).setValue("updated-owner@example.com");
+  harness.context.handleSpreadsheetEdit({
+    range: {
+      getSheet() { return config; },
+      getRow() { return 2; },
+      getNumRows() { return 1; }
+    }
+  });
+
+  harness.postForm({ _site: "edited-cache.example.com", _submission_id: "edited-cache-2", name: "Second" });
+  const states = JSON.parse(queueRows(harness)[1][12]);
+  assert.deepEqual(states.map((state) => state.email), ["updated-owner@example.com"]);
+});
+
+test("coalesces a delayed notification recovery trigger for a queue burst", () => {
+  const harness = makeHarness({ recipients: ["admin@example.com"] });
+  harness.context.setup();
+  harness.postForm({ _site: "recovery.example.com", _submission_id: "recovery-1", name: "First" });
+  harness.postForm({ _site: "recovery.example.com", _submission_id: "recovery-2", name: "Second" });
+
+  const recoveryTriggers = harness.triggers.filter((trigger) =>
+    trigger.handler === "processPendingNotifications" && trigger.delayMs === 6 * 60 * 1000
+  );
+  assert.equal(recoveryTriggers.length, 1);
+  assert.equal(harness.triggers.filter((trigger) => trigger.handler === "processPendingNotifications").length, 2);
+
+  harness.context.processPendingNotifications();
+  assert.equal(harness.triggers.filter((trigger) => trigger.handler === "processPendingNotifications").length, 1);
 });
 
 test("automatically adds new website sheets to site configuration", () => {
@@ -715,6 +938,7 @@ test("automatically adds new website sheets to site configuration", () => {
     "fallback@example.com",
     "TRUE"
   ]);
+  assert.equal(config.getRange(2, 6).getValues()[0][0], "created.example.com");
   assert.deepEqual(
     config.dataValidations.slice(-3).map((validation) => [validation.row, validation.column, validation.rule.values.join(",")]),
     [
@@ -730,6 +954,17 @@ test("automatically adds new website sheets to site configuration", () => {
   assert.deepEqual(configuredSites, ["created.example.com", "manual.example.com"]);
   assert.equal(config.getRange(3, 2).getValues()[0][0], "fallback@example.com");
   assert.equal(harness.spreadsheet.getSheets()[0].getName(), "__FH_SITE_CONFIG");
+});
+
+test("resizes managed columns during setup", () => {
+  const harness = makeHarness({ recipients: ["admin@example.com"] });
+  harness.context.setup();
+
+  const config = harness.spreadsheet.getSheetByName("__FH_SITE_CONFIG");
+  assert.ok(config.autoResizeCalls.length > 0);
+  assert.ok(config.columnWidths[4] >= "send_confirmation_emails".length * 8 + 24);
+  assert.ok(harness.spreadsheet.getSheetByName("__FH_QUEUE").autoResizeCalls.length > 0);
+  assert.ok(harness.spreadsheet.getSheetByName("__FH_INDEX").autoResizeCalls.length > 0);
 });
 
 test("evolves schema before operational columns and preserves previous row alignment", () => {
@@ -803,6 +1038,33 @@ test("restores renamed website tabs and edited header cells", () => {
   assert.equal(restored.getProtections().length, 4);
 });
 
+test("runtime submission paths restore renamed managed tabs before use", () => {
+  const harness = makeHarness({ recipients: ["admin@example.com"] });
+  harness.context.setup();
+  harness.postForm({ _site: "example.com", _submission_id: "runtime-rename-1", name: "First" });
+
+  const queue = harness.spreadsheet.getSheetByName("__FH_QUEUE");
+  const website = harness.spreadsheet.getSheetByName("example.com");
+  const sheetCount = harness.spreadsheet.getSheets().length;
+  queue.setName("renamed queue");
+  website.setName("renamed website");
+
+  const response = harness.postForm({
+    _site: "example.com",
+    _submission_id: "runtime-rename-2",
+    name: "Second"
+  });
+
+  assert.equal(response.status, "accepted");
+  assert.equal(harness.spreadsheet.getSheets().length, sheetCount);
+  assert.ok(harness.spreadsheet.getSheetByName("__FH_QUEUE"));
+  assert.ok(harness.spreadsheet.getSheetByName("example.com"));
+  assert.equal(harness.spreadsheet.getSheetByName("renamed queue"), null);
+  assert.equal(harness.spreadsheet.getSheetByName("renamed website"), null);
+  assert.equal(siteSheet(harness).getLastRow(), 3);
+  assert.equal(queueRows(harness).length, 2);
+});
+
 test("restores renamed honeypot tabs and edited capture headers", () => {
   const harness = makeHarness();
   harness.postForm({
@@ -848,6 +1110,23 @@ test("compacts UUID-shaped submission IDs while preserving retry identity", () =
   assert.equal(siteSheet(harness).getRange(2, 3).getValues()[0][0], first.submissionId);
   assert.equal(duplicate.status, "duplicate");
   assert.equal(duplicate.submissionId, first.submissionId);
+});
+
+test("compacts UUID-shaped honeypot IDs in the capture sheet", () => {
+  const harness = makeHarness({ recipients: [] });
+  const clientId = "0e26cba6-2e57-460a-b2f4-22943a564959";
+  harness.postForm({
+    _site: "example.com",
+    _submission_id: clientId,
+    _honeypot: "filled",
+    name: "Bot"
+  });
+
+  const sheet = harness.spreadsheet.getSheetByName("honeypot - example.com");
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const idColumn = headers.indexOf("_submission_id") + 1;
+  const storedId = sheet.getRange(2, idColumn).getValues()[0][0];
+  assert.match(storedId, /^fh-[0-9a-f]{16}$/);
 });
 
 test("rejects malformed, unsupported, missing-site, honeypot, and reserved-field requests", () => {
@@ -913,6 +1192,7 @@ test("tracks honeypot read status and adds unread review context to genuine mail
     name: "Ada",
     message: "Hello"
   });
+  harness.context.processPendingNotifications();
   assert.equal(harness.mail.sentMail.length, 1);
   assert.match(harness.mail.sentMail[0].body, /honeypot record\(s\) were also received in the last 5 days/);
   assert.match(harness.mail.sentMail[0].body, /View them:/);
@@ -940,6 +1220,10 @@ test("combines unread honeypots into one mailed digest after five days", () => {
   });
 
   const honeypotSheet = harness.spreadsheet.getSheetByName("honeypot - example.com");
+  assert.deepEqual(
+    honeypotSheet.dataValidations.map((validation) => [validation.row, validation.rowCount]),
+    [[2, 1], [3, 1]]
+  );
   const headers = honeypotSheet.getRange(1, 1, 1, honeypotSheet.getLastColumn()).getValues()[0];
   const deadlineColumn = headers.indexOf("__fh_honeypot_window_deadline") + 1;
   const mailedColumn = headers.indexOf("__fh_honeypot_mailed_status") + 1;
@@ -981,7 +1265,7 @@ test("worker sends individually formatted notifications with website, timestamp,
 
   const result = harness.context.processPendingNotifications();
   assert.equal(result.quotaBlocked, false);
-  assert.equal(result.processed, 0);
+  assert.equal(result.processed, 2);
   assert.equal(harness.mail.sentMail.length, 2);
   harness.mail.sentMail.forEach((mail) => {
     assert.match(mail.subject, /New Form Submission \| example\.com/);
@@ -1009,7 +1293,9 @@ test("sends a saved-data confirmation to the submitted email field", () => {
   });
 
   assert.equal(response.status, "accepted");
-  assert.equal(response.confirmationStatus, "processing");
+  assert.equal(response.confirmationStatus, "queued");
+  assert.equal(harness.mail.sentMail.length, 0);
+  harness.context.processPendingNotifications();
   assert.equal(harness.mail.sentMail.length, 2);
   assert.match(harness.mail.sentMail[0].subject, /Submission saved \| example\.com/);
   assert.match(harness.mail.sentMail[0].body, /FORM SUBMISSION SAVED/);
@@ -1029,6 +1315,8 @@ test("can disable submitter confirmation emails without disabling admin mail", (
   });
 
   assert.equal(response.confirmationStatus, "disabled");
+  assert.equal(harness.mail.sentMail.length, 0);
+  harness.context.processPendingNotifications();
   assert.equal(harness.mail.sentMail.length, 1);
   assert.match(harness.mail.sentMail[0].subject, /New Form Submission \| example\.com/);
 });
@@ -1048,6 +1336,41 @@ test("quota exhaustion keeps the submission stored and leaves notification pendi
   assert.equal(harness.mail.sentMail.length, 0);
   assert.equal(queueRows(harness)[0][7], "pending");
   assert.equal(siteSheet(harness).getLastRow(), 2);
+});
+
+test("worker recovers a stored row when the initial queue append fails", () => {
+  const harness = makeHarness({ recipients: ["admin@example.com"] });
+  harness.context.setup();
+  const queue = harness.spreadsheet.getSheetByName("__FH_QUEUE");
+  const originalAppendRow = queue.appendRow;
+  let failOnce = true;
+  queue.appendRow = function(values) {
+    if (failOnce) {
+      failOnce = false;
+      throw new Error("temporary queue append failure");
+    }
+    return originalAppendRow.call(queue, values);
+  };
+
+  const response = harness.postForm({
+    _site: "example.com",
+    _submission_id: "deferred-queue-test",
+    name: "Ada",
+    message: "Persist this before queue recovery"
+  });
+
+  assert.equal(response.status, "accepted");
+  assert.equal(response.notificationStatus, "deferred_queue_error");
+  assert.equal(queueRows(harness).length, 0);
+  assert.equal(siteSheet(harness).getRange(2, 6).getValues()[0][0], "deferred_queue_error");
+
+  queue.appendRow = originalAppendRow;
+  const result = harness.context.processPendingNotifications();
+  assert.equal(result.deferredSubmissionsQueued, 1);
+  assert.equal(result.processed, 1);
+  assert.equal(harness.mail.sentMail.length, 1);
+  assert.equal(queueRows(harness)[0][7], "sent");
+  assert.equal(siteSheet(harness).getRange(2, 6).getValues()[0][0], "sent");
 });
 
 test("partial delivery preserves per-recipient retry state", () => {
@@ -1101,4 +1424,166 @@ test("testSubmission is a dry-run and health diagnostics report queue and trigge
   assert.deepEqual(afterDryRun, before);
   assert.equal(health.triggerCount, 0);
   assert.equal(health.pendingNotifications, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Load and concurrency-style burst scenarios
+// ---------------------------------------------------------------------------
+
+test("load burst stores 100 submissions across four websites without loss", async () => {
+  // Give the worker enough daily quota to process the full synthetic batch
+  // while still exercising its quota accounting in the other test cases.
+  const harness = makeHarness({ recipients: ["admin@example.com"], remainingQuota: 200 });
+  const sites = ["load-a.example.com", "load-b.example.com", "load-c.example.com", "load-d.example.com"];
+  const submissions = [];
+
+  // Twenty-five submissions per site stays within the configured
+  // 30-request-per-site rolling window while still exercising a 100-request
+  // burst across the shared workbook, queue, and dynamic schema logic.
+  sites.forEach((site) => {
+    for (let index = 0; index < 25; index += 1) {
+      const fields = {
+        _site: site,
+        _submission_id: `${site}-load-${index}`,
+        name: `Submitter ${index}`
+      };
+      // These staged fields force each site's schema to evolve while rows are
+      // being appended, including a field added after the first submissions.
+      if (index >= 1) fields.email = `submitter-${index}@example.com`;
+      if (index >= 2) fields.message = `Message ${index}`;
+      if (index === 10) fields.phone = "7011403558";
+      submissions.push(fields);
+    }
+  });
+
+  const responses = await Promise.all(
+    submissions.map((fields) => Promise.resolve().then(() => harness.postForm(fields)))
+  );
+
+  assert.equal(responses.filter((response) => response.status === "accepted").length, 100);
+  assert.equal(responses.filter((response) => response.status !== "accepted").length, 0);
+  assert.equal(queueRows(harness).length, 100);
+  assert.equal(harness.properties.get("__FH_PENDING_COUNT"), "100");
+
+  sites.forEach((site) => {
+    const sheet = siteSheet(harness, site);
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    assert.deepEqual(headers, [
+      "Timestamp",
+      "name",
+      "email",
+      "message",
+      "phone",
+      "__fh_submission_id",
+      "__fh_source_site",
+      "__fh_notification_status"
+    ]);
+    assert.equal(sheet.getLastRow(), 26);
+    const ids = sheet.getRange(2, 6, 25, 1).getValues().flat();
+    assert.equal(new Set(ids).size, 25);
+  });
+
+  // The worker intentionally caps each execution at 25 attempts. Repeated
+  // worker runs prove that the full durable queue drains without omissions.
+  for (let run = 0; run < 10 && harness.properties.get("__FH_PENDING_COUNT") !== "0"; run += 1) {
+    harness.context.processPendingNotifications(1000);
+  }
+  assert.equal(harness.properties.get("__FH_PENDING_COUNT"), "0");
+  assert.equal(harness.mail.sentMail.length, 100);
+  assert.ok(queueRows(harness).every((row) => row[7] === "sent"));
+});
+
+test("load burst applies the per-site rate limit without losing accepted rows", async () => {
+  const harness = makeHarness({ recipients: ["admin@example.com"] });
+  const responses = await Promise.all(
+    Array.from({ length: 100 }, (_, index) => Promise.resolve().then(() => harness.postForm({
+      _site: "rate-load.example.com",
+      _submission_id: `rate-load-${index}`,
+      name: `Rate test ${index}`,
+      message: `Message ${index}`
+    })))
+  );
+
+  const accepted = responses.filter((response) => response.status === "accepted");
+  const rateLimited = responses.filter((response) => response.code === "rate_limited");
+  assert.equal(accepted.length, 30);
+  assert.equal(rateLimited.length, 70);
+  assert.equal(responses.length, accepted.length + rateLimited.length);
+
+  const sheet = siteSheet(harness, "rate-load.example.com");
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  assert.deepEqual(headers, [
+    "Timestamp",
+    "name",
+    "message",
+    "__fh_submission_id",
+    "__fh_source_site",
+    "__fh_notification_status"
+  ]);
+  assert.equal(sheet.getLastRow(), 31);
+  assert.equal(queueRows(harness).length, 30);
+  assert.equal(harness.properties.get("__FH_PENDING_COUNT"), "30");
+
+  // Every accepted response must correspond to exactly one persisted row and
+  // one durable queue item; rate-limited requests are not storage losses.
+  const persistedIds = new Set(sheet.getRange(2, 4, 30, 1).getValues().flat());
+  assert.equal(persistedIds.size, 30);
+  accepted.forEach((response) => assert.ok(persistedIds.has(response.submissionId)));
+});
+
+test("duplicate burst creates one row and one queue item per unique submission", async () => {
+  const harness = makeHarness({ recipients: ["admin@example.com"] });
+  const requests = [];
+  for (let index = 0; index < 12; index += 1) {
+    const fields = {
+      _site: "duplicate-load.example.com",
+      _submission_id: `duplicate-load-${index}`,
+      name: `Duplicate test ${index}`
+    };
+    requests.push(fields, { ...fields });
+  }
+
+  const responses = await Promise.all(
+    requests.map((fields) => Promise.resolve().then(() => harness.postForm(fields)))
+  );
+  assert.equal(responses.filter((response) => response.status === "accepted").length, 12);
+  assert.equal(responses.filter((response) => response.status === "duplicate").length, 12);
+  assert.equal(queueRows(harness).length, 12);
+  assert.equal(siteSheet(harness, "duplicate-load.example.com").getLastRow(), 13);
+  assert.equal(harness.properties.get("__FH_PENDING_COUNT"), "12");
+});
+
+test("load retry burst preserves all queue items and recovers after delivery resumes", async () => {
+  const harness = makeHarness({
+    recipients: ["admin@example.com"],
+    failingRecipients: ["admin@example.com"]
+  });
+  const responses = await Promise.all(
+    Array.from({ length: 25 }, (_, index) => Promise.resolve().then(() => harness.postForm({
+      _site: "retry-load.example.com",
+      _submission_id: `retry-load-${index}`,
+      name: `Retry test ${index}`
+    })))
+  );
+  assert.ok(responses.every((response) => response.status === "accepted"));
+  assert.equal(queueRows(harness).length, 25);
+
+  harness.context.processPendingNotifications(1000);
+  assert.equal(harness.properties.get("__FH_PENDING_COUNT"), "25");
+  assert.ok(queueRows(harness).every((row) => row[7] === "retry"));
+
+  // Make the retry window due immediately; production workers normally wait
+  // for the bounded backoff timestamp before claiming these rows.
+  const queue = harness.spreadsheet.getSheetByName("__FH_QUEUE");
+  queueRows(harness).forEach((row, index) => {
+    const states = JSON.parse(row[12]);
+    states.forEach((state) => { state.nextAttemptAt = 0; });
+    queue.getRange(index + 2, 13).setValue(JSON.stringify(states));
+  });
+  harness.mail.failingRecipients.clear();
+  harness.context.processPendingNotifications(1000);
+
+  assert.equal(harness.properties.get("__FH_PENDING_COUNT"), "0");
+  assert.equal(harness.mail.sentMail.length, 25);
+  assert.ok(queueRows(harness).every((row) => row[7] === "sent"));
 });
