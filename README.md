@@ -60,6 +60,8 @@ FormHarbour/
 │   └── FRONTEND_INTEGRATION.md     Prompts and frontend code recipes
 ├── tests/
 │   └── Code.test.js                Local behavioral test harness
+├── samples/
+│   └── Form-Harbour.xlsx           Sample workbook with managed FormHarbour tabs
 └── test-form/
     ├── index.html                  Browser test form
     ├── app.js                      Test form behavior
@@ -79,6 +81,17 @@ FormHarbour creates and manages these tabs:
 | `__FH_QUEUE` | Hidden durable notification queue |
 | `__FH_INDEX` | Hidden submission index and idempotency reference |
 | `__FH_LOG` | Hidden bounded operational log |
+
+## 📄 Sample workbook
+
+The repository includes a sample Google Sheets-compatible workbook:
+[samples/Form-Harbour.xlsx](samples/Form-Harbour.xlsx).
+
+It contains example managed tabs for `yugagarwal.dev`, including the site
+configuration sheet, website records, honeypot review records, queue, index, and
+log tabs. Use it as a visual reference or import a copy into Google Sheets while
+learning the system. Do not use the sample workbook as a production destination;
+configure your own spreadsheet ID in `Code.gs` and run `setup()` for production.
 
 Website record columns are ordered as:
 
