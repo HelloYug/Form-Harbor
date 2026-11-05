@@ -9,6 +9,32 @@ running a separate server or database.
 
 Created and maintained by [Yug Agarwal](https://yugagarwal.dev).
 
+## 🖼️ Project visuals
+
+<p align="center">
+  <img src="images/formharbour-promo.png" alt="FormHarbour project overview" width="900">
+</p>
+
+<p align="center"><em>FormHarbour test client and project overview.</em></p>
+
+<p align="center">
+  <img src="images/contact-form-yugagarwal-dev.png" alt="Yug Agarwal contact form using FormHarbour" width="900">
+</p>
+
+<p align="center"><em>Website contact form connected to FormHarbour.</em></p>
+
+<p align="center">
+  <img src="images/submission-sheet-example.png" alt="FormHarbour submission record in Google Sheets" width="900">
+</p>
+
+<p align="center"><em>Submission stored with timestamp, form fields, and protected metadata.</em></p>
+
+<p align="center">
+  <img src="images/notification-email-example.png" alt="FormHarbour notification email" width="900">
+</p>
+
+<p align="center"><em>Formatted notification email containing the submitted details.</em></p>
+
 ## 🎯 Use cases
 
 - Contact and enquiry forms.
@@ -62,6 +88,11 @@ FormHarbour/
 │   └── Code.test.js                Local behavioral test harness
 ├── samples/
 │   └── Form-Harbour.xlsx           Sample workbook with managed FormHarbour tabs
+├── images/
+│   ├── formharbour-promo.png       Project overview graphic
+│   ├── contact-form-yugagarwal-dev.png
+│   ├── submission-sheet-example.png
+│   └── notification-email-example.png
 └── test-form/
     ├── index.html                  Browser test form
     ├── app.js                      Test form behavior
